@@ -12,6 +12,51 @@ from Py4GWCoreLib import Routines
 from Py4GWCoreLib.py4gwcorelib_src.Settings import Settings
 
 
+# Model IDs blacklisted from salvage regardless of rarity filters. Widget
+# stores this as a comma-separated string in the INI; the singleton wants
+# a list[int]. Keep the two representations in sync here.
+_SALVAGE_BLACKLIST_MODEL_IDS = [31202, 31203, 31204]  # glacial stones
+
+# Remembered by set_autoloot_options_for_custom_bots() and re-applied
+# defensively on every identify_and_salvage_items() call, so the
+# singleton state is guaranteed correct even if it was clobbered or if
+# the setter was never called in this session.
+_pending_salvage_golds: bool = True
+
+
+def _apply_handler_settings(salvage_golds: bool) -> None:
+    """Mirror our chosen loot options onto the AutoInventoryHandler singleton.
+
+    Bypasses the InventoryPlus widget — headless custom bots run with
+    `module_active=False`, so the widget never runs and never populates
+    the handler flags. Without this the handler's `salvage_*` flags stay
+    False and SalvageItems silently no-ops on every item.
+    """
+    handler = AutoInventoryHandler()
+
+    handler.id_whites = True
+    handler.id_blues = True
+    handler.id_purples = True
+    handler.id_golds = True
+    handler.id_greens = False
+
+    handler.salvage_whites = True
+    handler.salvage_rare_materials = False
+    handler.salvage_blues = True
+    handler.salvage_purples = True
+    handler.salvage_golds = salvage_golds
+
+    handler.deposit_trophies = False
+    handler.deposit_materials = False
+    handler.deposit_event_items = False
+    handler.deposit_dyes = False
+    handler.deposit_golds = not salvage_golds
+    handler.deposit_greens = True
+    handler.keep_gold = 10000
+
+    handler.salvage_blacklist = list(_SALVAGE_BLACKLIST_MODEL_IDS)
+
+
 INI_PATH = "Inventory/InventoryPlus"  # path to save ini key
 INI_FILENAME = "InventoryPlus.ini"  # ini file name
 VIABLE_LOOT = {
@@ -112,6 +157,11 @@ def get_valid_loot_array(viable_loot=VIABLE_LOOT, loot_salvagables=False):
 
 def identify_and_salvage_items():
     yield from Routines.Yield.wait(1500)
+    # Re-apply handler settings every cycle. Guards against:
+    # 1. The singleton never being populated (e.g. widget disabled AND
+    #    set_autoloot_options_for_custom_bots ran with the pre-fix code).
+    # 2. Another module clobbering the flags between salvage cycles.
+    _apply_handler_settings(_pending_salvage_golds)
     yield from AutoInventoryHandler().IDAndSalvageItems()
 
 
@@ -141,7 +191,14 @@ def move_all_crafting_materials_to_storage():
 
 
 def set_autoloot_options_for_custom_bots(salvage_golds=False, module_active=False):
-    '''Set autoloot options for custom bots using the InventoryPlus INI'''
+    '''Set autoloot options for custom bots.
+
+    Persists to the InventoryPlus INI (so the widget picks them up if it's
+    ever enabled) AND applies the same values directly to the
+    `AutoInventoryHandler` singleton. Without the second step, custom bots
+    that run with `module_active=False` never populate the singleton and
+    salvage/ID silently no-op (every `salvage_*` flag defaults to False).
+    '''
 
     cfg = Settings(f"{INI_PATH}/{INI_FILENAME}", "account")
 
@@ -172,4 +229,11 @@ def set_autoloot_options_for_custom_bots(salvage_golds=False, module_active=Fals
     cfg.set("AutoDeposit", "keep_gold", 10000)
 
     # === Blacklists ===
-    cfg.set("AutoSalvage", "salvage_blacklist", "31202,31203,31204")  # remove glacial stones
+    salvage_blacklist_csv = ",".join(str(m) for m in _SALVAGE_BLACKLIST_MODEL_IDS)
+    cfg.set("AutoSalvage", "salvage_blacklist", salvage_blacklist_csv)  # remove glacial stones
+
+    # === Mirror to the singleton (bypasses the widget for headless bots) ===
+    global _pending_salvage_golds
+    _pending_salvage_golds = salvage_golds
+    AutoInventoryHandler().module_active = module_active
+    _apply_handler_settings(salvage_golds)
