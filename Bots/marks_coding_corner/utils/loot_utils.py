@@ -1,7 +1,6 @@
 from Py4GWCoreLib import GLOBAL_CACHE
 from Py4GWCoreLib import Agent
 from Py4GWCoreLib import AgentArray
-from Py4GWCoreLib import AutoInventoryHandler
 from Py4GWCoreLib import Bags
 from Py4GWCoreLib import Item
 from Py4GWCoreLib import ItemArray
@@ -12,71 +11,25 @@ from Py4GWCoreLib import Routines
 from Py4GWCoreLib.py4gwcorelib_src.Settings import Settings
 
 
-# Model IDs blacklisted from salvage regardless of rarity filters. Widget
-# stores this as a comma-separated string in the INI; the singleton wants
-# a list[int]. Keep the two representations in sync here.
-_SALVAGE_BLACKLIST_MODEL_IDS = [31202, 31203, 31204]  # glacial stones
+INI_PATH = "Inventory/InventoryPlus"
+INI_FILENAME = "InventoryPlus.ini"
 
-# Remembered by set_autoloot_options_for_custom_bots() and re-applied
-# defensively on every identify_and_salvage_items() call, so the
-# singleton state is guaranteed correct even if it was clobbered or if
-# the setter was never called in this session.
-_pending_salvage_golds: bool = True
+SALVAGE_BLACKLIST_MODEL_IDS = {31202, 31203, 31204}  # glacial stones
+SALVAGE_ALLOWED_RARITIES = {"White", "Blue", "Purple", "Gold"}
 
-
-def _apply_handler_settings(salvage_golds: bool) -> None:
-    """Mirror our chosen loot options onto the AutoInventoryHandler singleton.
-
-    Bypasses the InventoryPlus widget — headless custom bots run with
-    `module_active=False`, so the widget never runs and never populates
-    the handler flags. Without this the handler's `salvage_*` flags stay
-    False and SalvageItems silently no-ops on every item.
-    """
-    handler = AutoInventoryHandler()
-
-    handler.id_whites = True
-    handler.id_blues = True
-    handler.id_purples = True
-    handler.id_golds = True
-    handler.id_greens = False
-
-    handler.salvage_whites = True
-    handler.salvage_rare_materials = False
-    handler.salvage_blues = True
-    handler.salvage_purples = True
-    handler.salvage_golds = salvage_golds
-
-    handler.deposit_trophies = False
-    handler.deposit_materials = False
-    handler.deposit_event_items = False
-    handler.deposit_dyes = False
-    handler.deposit_golds = not salvage_golds
-    handler.deposit_greens = True
-    handler.keep_gold = 10000
-
-    handler.salvage_blacklist = list(_SALVAGE_BLACKLIST_MODEL_IDS)
-
-
-INI_PATH = "Inventory/InventoryPlus"  # path to save ini key
-INI_FILENAME = "InventoryPlus.ini"  # ini file name
 VIABLE_LOOT = {
-    # Coin
     ModelID.Gold_Coins,
-    # Materials
     ModelID.Bone,
     ModelID.Plant_Fiber,
     ModelID.Pile_Of_Glittering_Dust,
     ModelID.Feather,
-    # Materials from Farms
     ModelID.Abnormal_Seed,
     ModelID.Feathered_Crest,
     ModelID.Shadowy_Remnants,
-    # Alcohol Pts
     ModelID.Bottle_Of_Rice_Wine,
     ModelID.Bottle_Of_Vabbian_Wine,
     ModelID.Dwarven_Ale,
     ModelID.Eggnog,
-    # ModelID.Hard_Apple_Cider,
     ModelID.Hunters_Ale,
     ModelID.Shamrock_Ale,
     ModelID.Witchs_Brew,
@@ -85,22 +38,16 @@ VIABLE_LOOT = {
     ModelID.Bottle_Of_Grog,
     ModelID.Krytan_Brandy,
     ModelID.Spiked_Eggnog,
-    # Dye
     ModelID.Vial_Of_Dye,
-    # Commonish Rare Materials
     ModelID.Monstrous_Claw,
     ModelID.Monstrous_Eye,
-    # Lockpick
     ModelID.Lockpick,
-    # Halloween
     ModelID.Candy_Apple,
     ModelID.Pumpkin_Cookie,
     ModelID.Candy_Corn,
     ModelID.Squash_Serum,
     ModelID.Trick_Or_Treat_Bag,
     ModelID.Vial_Of_Absinthe,
-    ModelID.Witchs_Brew,
-    # Sweet Treat
     ModelID.Slice_Of_Pumpkin_Pie,
     ModelID.Candy_Cane_Shard,
     ModelID.Fruitcake,
@@ -109,14 +56,44 @@ VIABLE_LOOT = {
 }
 
 
+def inventory_bag_items() -> list[int]:
+    bag_list = ItemArray.CreateBagList(Bags.Backpack, Bags.BeltPouch, Bags.Bag1, Bags.Bag2)
+    return ItemArray.GetItemArray(bag_list)
+
+
+def collect_unidentified_item_ids() -> list[int]:
+    return [
+        item_id for item_id in inventory_bag_items()
+        if not Item.Usage.IsIdentified(item_id)
+    ]
+
+
+def collect_salvageable_item_ids(
+    allowed_rarities: set[str] = SALVAGE_ALLOWED_RARITIES,
+    salvage_golds: bool = True,
+) -> list[int]:
+    result: list[int] = []
+    for item_id in inventory_bag_items():
+        if not Item.Usage.IsSalvageable(item_id):
+            continue
+        if Item.Usage.IsSalvageKit(item_id) or Item.Usage.IsIDKit(item_id):
+            continue
+        if Item.GetModelID(item_id) in SALVAGE_BLACKLIST_MODEL_IDS:
+            continue
+        _, rarity = Item.Rarity.GetRarity(item_id)
+        if rarity not in allowed_rarities:
+            continue
+        if rarity == "Gold" and not salvage_golds:
+            continue
+        result.append(item_id)
+    return result
+
+
 def is_valid_item(item_id):
     if not Agent.IsValid(item_id):
         return False
-    player_agent_id = Player.GetAgentID()
     owner_id = Agent.GetItemAgentOwnerID(item_id)
-    if (owner_id == player_agent_id) or (owner_id == 0):
-        return True
-    return False
+    return owner_id == Player.GetAgentID() or owner_id == 0
 
 
 def get_valid_loot_array(viable_loot=VIABLE_LOOT, loot_salvagables=False):
@@ -125,27 +102,18 @@ def get_valid_loot_array(viable_loot=VIABLE_LOOT, loot_salvagables=False):
 
     agent_array = AgentArray.GetItemArray()
 
-    item_array_model = AgentArray.Filter.ByCondition(
-        agent_array, lambda agent_id: Item.GetModelID(Agent.GetItemAgentItemID(agent_id)) in viable_loot
-    )
-
     item_array_salv = []
     if loot_salvagables:
         item_array_salv = AgentArray.Filter.ByCondition(
             agent_array, lambda agent_id: Item.Usage.IsSalvageable(Agent.GetItemAgentItemID(agent_id))
         )
 
-    item_array = list(set(item_array_model + item_array_salv))
-    item_array = AgentArray.Sort.ByDistance(item_array, Player.GetXY())
-
-    # return item_array
     filtered_agent_ids = []
-    for agent_id in loot_array[:]:  # Iterate over a copy to avoid modifying while iterating
+    for agent_id in loot_array[:]:
         item_id = Agent.GetItemAgentItemID(agent_id)
-        item_id = item_id
         model_id = Item.GetModelID(item_id)
         if model_id in viable_loot and is_valid_item(agent_id):
-            # Black and White Dyes
+            # Only keep black (10) and white (12) dyes; skip other colors.
             if (
                 model_id == ModelID.Vial_Of_Dye
                 and (GLOBAL_CACHE.Item.GetDyeColor(item_id) == 10 or GLOBAL_CACHE.Item.GetDyeColor(item_id) == 12)
@@ -155,18 +123,23 @@ def get_valid_loot_array(viable_loot=VIABLE_LOOT, loot_salvagables=False):
     return list(set(filtered_agent_ids + item_array_salv))
 
 
-def identify_and_salvage_items():
+def identify_and_salvage_items(salvage_golds: bool = True):
+    """Bypasses AutoInventoryHandler and drives the low-level queue routines
+    directly with a caller-collected item list."""
     yield from Routines.Yield.wait(1500)
-    # Re-apply handler settings every cycle. Guards against:
-    # 1. The singleton never being populated (e.g. widget disabled AND
-    #    set_autoloot_options_for_custom_bots ran with the pre-fix code).
-    # 2. Another module clobbering the flags between salvage cycles.
-    _apply_handler_settings(_pending_salvage_golds)
-    yield from AutoInventoryHandler().IDAndSalvageItems()
+
+    unidentified = collect_unidentified_item_ids()
+    if unidentified:
+        yield from Routines.Yield.Items.IdentifyItems(unidentified)
+        yield from Routines.Yield.wait(500)
+
+    salvageable = collect_salvageable_item_ids(salvage_golds=salvage_golds)
+    if salvageable:
+        yield from Routines.Yield.Items.SalvageItems(salvageable)
 
 
 def move_all_crafting_materials_to_storage():
-    COMMON_FARMED_CRAFTING_MATERIALS = [
+    farmable_mats = {
         ModelID.Wood_Plank,
         ModelID.Scale,
         ModelID.Tanned_Hide_Square,
@@ -176,50 +149,33 @@ def move_all_crafting_materials_to_storage():
         ModelID.Iron_Ingot,
         ModelID.Pile_Of_Glittering_Dust,
         ModelID.Feather,
-    ]
-    bag_list = ItemArray.CreateBagList(Bags.Backpack, Bags.BeltPouch, Bags.Bag1, Bags.Bag2)
-    all_items = ItemArray.GetItemArray(bag_list)
-    # Store remaining non-sold sellables
-    item_ids_to_store = []
-    for item_id in all_items:
-        if GLOBAL_CACHE.Item.GetModelID(item_id) in COMMON_FARMED_CRAFTING_MATERIALS:
-            item_ids_to_store.append(item_id)
-
-    for item_id in item_ids_to_store:
-        GLOBAL_CACHE.Inventory.DepositItemToStorage(item_id)
-        yield from Routines.Yield.wait(250)
+    }
+    for item_id in inventory_bag_items():
+        if GLOBAL_CACHE.Item.GetModelID(item_id) in farmable_mats:
+            GLOBAL_CACHE.Inventory.DepositItemToStorage(item_id)
+            yield from Routines.Yield.wait(250)
 
 
 def set_autoloot_options_for_custom_bots(salvage_golds=False, module_active=False):
-    '''Set autoloot options for custom bots.
-
-    Persists to the InventoryPlus INI (so the widget picks them up if it's
-    ever enabled) AND applies the same values directly to the
-    `AutoInventoryHandler` singleton. Without the second step, custom bots
-    that run with `module_active=False` never populate the singleton and
-    salvage/ID silently no-op (every `salvage_*` flag defaults to False).
-    '''
-
+    """Persist loot options to the InventoryPlus INI. Only relevant when the
+    InventoryPlus widget is enabled (module_active=True) — our own
+    identify_and_salvage_items bypasses the widget entirely."""
     cfg = Settings(f"{INI_PATH}/{INI_FILENAME}", "account")
 
-    # === Module State ===
     cfg.set("AutoManager", "module_active", module_active)
 
-    # === Salvage Settings ===
     cfg.set("AutoSalvage", "salvage_whites", True)
     cfg.set("AutoSalvage", "salvage_rare_materials", False)
     cfg.set("AutoSalvage", "salvage_blues", True)
     cfg.set("AutoSalvage", "salvage_purples", True)
     cfg.set("AutoSalvage", "salvage_golds", salvage_golds)
 
-    # === Identification Settings ===
     cfg.set("AutoIdentify", "id_whites", True)
     cfg.set("AutoIdentify", "id_blues", True)
     cfg.set("AutoIdentify", "id_purples", True)
     cfg.set("AutoIdentify", "id_golds", True)
     cfg.set("AutoIdentify", "id_greens", False)
 
-    # === Deposit Settings ===
     cfg.set("AutoDeposit", "deposit_trophies", False)
     cfg.set("AutoDeposit", "deposit_materials", False)
     cfg.set("AutoDeposit", "deposit_event_items", False)
@@ -228,12 +184,4 @@ def set_autoloot_options_for_custom_bots(salvage_golds=False, module_active=Fals
     cfg.set("AutoDeposit", "deposit_greens", True)
     cfg.set("AutoDeposit", "keep_gold", 10000)
 
-    # === Blacklists ===
-    salvage_blacklist_csv = ",".join(str(m) for m in _SALVAGE_BLACKLIST_MODEL_IDS)
-    cfg.set("AutoSalvage", "salvage_blacklist", salvage_blacklist_csv)  # remove glacial stones
-
-    # === Mirror to the singleton (bypasses the widget for headless bots) ===
-    global _pending_salvage_golds
-    _pending_salvage_golds = salvage_golds
-    AutoInventoryHandler().module_active = module_active
-    _apply_handler_settings(salvage_golds)
+    cfg.set("AutoSalvage", "salvage_blacklist", ",".join(str(m) for m in SALVAGE_BLACKLIST_MODEL_IDS))

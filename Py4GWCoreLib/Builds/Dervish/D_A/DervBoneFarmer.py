@@ -1,19 +1,7 @@
-"""DervBoneFarmer — Dervish/Assassin bone farming build for COF.
-
-Ported to `BTBuildMgr`: rotation is a BehaviorTree instead of a
-generator, so it composes with a `BottingTree` planner without the
-shared `ActionQueueManager` collisions the generator-based rotation
-had. Metadata (template, required skills, weapon rules) is unchanged.
-
-Phase communication is via `self.status` — the planner writes one of
-the `DervBuildFarmStatus` values, the rotation's condition nodes read
-it every tick.
-"""
 from __future__ import annotations
 
 from Py4GWCoreLib import GLOBAL_CACHE
 from Py4GWCoreLib import Agent
-from Py4GWCoreLib import AgentModelID
 from Py4GWCoreLib import BTBuildMgr
 from Py4GWCoreLib import Key
 from Py4GWCoreLib import Keystroke
@@ -22,13 +10,30 @@ from Py4GWCoreLib import Profession
 from Py4GWCoreLib import Range
 from Py4GWCoreLib import Routines
 from Py4GWCoreLib import Skill
-from Py4GWCoreLib import SpiritModelID
 from Py4GWCoreLib import Weapon
 from Py4GWCoreLib.Builds.Any.HeroAI import HeroAI_Build
 from Py4GWCoreLib.py4gwcorelib_src.BehaviorTree import BehaviorTree
 from Py4GWCoreLib.routines_src.BehaviourTrees import BT
 
-ENEMY_BLACKLIST = {SpiritModelID.BLOODSONG, SpiritModelID.DESTRUCTION, AgentModelID.CHARR_AXEMASTER}
+# Name substring matches — case-insensitive. Handy for readability but requires
+# the name string-table lookup to have resolved; unnamed enemies won't match.
+ENEMY_BLACKLIST_NAMES = {"blood song", "destruction", "charr axemaster"}
+
+# Encoded-string matches — locale-independent and available as soon as the agent
+# loads (before the name resolves). Copy the exact strings from the diagnostic
+# log printed by WaitForAreaClearOrDeath, e.g. "\\x171C\\x8FE8".
+ENEMY_BLACKLIST_ENC_STRINGS: set[str] = set()
+
+
+def is_blacklisted_enemy(agent_id: int) -> bool:
+    enc = Agent.GetEncNameStrByID(agent_id, literal=False)
+    if enc and enc in ENEMY_BLACKLIST_ENC_STRINGS:
+        return True
+    name = Agent.GetNameByID(agent_id)
+    if not name:
+        return False
+    name_lower = name.lower()
+    return any(needle in name_lower for needle in ENEMY_BLACKLIST_NAMES)
 
 
 class DervBuildFarmStatus:
@@ -39,14 +44,11 @@ class DervBuildFarmStatus:
     Wait = 'wait'
 
 
-_NON_COMBAT_PHASES = {
+NON_COMBAT_PHASES = {
     DervBuildFarmStatus.Setup,
     DervBuildFarmStatus.Loot,
     DervBuildFarmStatus.Wait,
 }
-
-
-# ---- Small BT construction helpers (module-local, used only here) --------
 
 
 def sequence(name: str, *children) -> BehaviorTree:
@@ -70,7 +72,7 @@ def succeeder(name: str) -> BehaviorTree.SucceederNode:
 
 
 def optional(cast_tree: BehaviorTree, name: str = "Optional") -> BehaviorTree:
-    """Wrap so a cast failure (on cooldown, no energy) doesn't fail the parent."""
+    """Absorb child FAILURE so the parent Sequence doesn't abort."""
     return selector(name, cast_tree, succeeder(f"{name}:Skip"))
 
 
@@ -98,7 +100,6 @@ class DervBoneFarmer(BTBuildMgr):
 
         self.SetFallback("HeroAI", HeroAI_Build(standalone_fallback=True))
 
-        # Skill IDs pulled out as attributes for readable rotation code.
         self.signet_of_mystic_speed = self.skills[0]
         self.pious_fury = self.skills[1]
         self.grenths_aura = self.skills[2]
@@ -108,10 +109,7 @@ class DervBoneFarmer(BTBuildMgr):
         self.vow_of_piety = self.skills[6]
         self.i_am_unstoppable = self.skills[7]
 
-        # Planner writes here; rotation reads it every tick.
         self.status: str = DervBuildFarmStatus.Wait
-
-    # ---- Per-tick predicates ---------------------------------------------
 
     def has_buff(self, skill_id: int) -> bool:
         return bool(Routines.Checks.Effects.HasBuff(Player.GetAgentID(), skill_id))
@@ -126,13 +124,9 @@ class DervBoneFarmer(BTBuildMgr):
     def filtered_enemies_in_range(self):
         px, py = Player.GetXY()
         arr = Routines.Agents.GetFilteredEnemyArray(px, py, Range.Spellcast.value)
-        return [aid for aid in arr if Agent.GetModelID(aid) not in ENEMY_BLACKLIST], px, py
-
-    # ---- Small BT builders ------------------------------------------------
+        return [aid for aid in arr if not is_blacklisted_enemy(aid)], px, py
 
     def cast_gated(self, name: str, skill_id: int, gate_fn, aftercast_ms: int) -> BehaviorTree:
-        """Cast `skill_id` if `gate_fn()` and CastSkillID's own preconditions
-        all pass. The gate re-evaluates every tick."""
         return sequence(
             f"Cast:{name}",
             condition(f"Gate:{name}", gate_fn),
@@ -140,45 +134,37 @@ class DervBoneFarmer(BTBuildMgr):
         )
 
     def cast_plain(self, name: str, skill_id: int, aftercast_ms: int) -> BehaviorTree:
-        """Cast `skill_id` if CastSkillID's own preconditions pass (energy,
-        readiness, slot resolution). No extra gate."""
         return BT.Skills.CastSkillID(skill_id, aftercast_delay=aftercast_ms, log=False)
 
     def swap_to_scythe(self) -> BehaviorTree:
-        def needs() -> bool:
+        def needs_scythe() -> bool:
             return Agent.GetWeaponType(Player.GetAgentID())[0] != Weapon.Scythe
 
-        def press(node) -> BehaviorTree.NodeState:
+        def press_f1(node) -> BehaviorTree.NodeState:
             Keystroke.PressAndRelease(Key.F1.value)
             return BehaviorTree.NodeState.SUCCESS
 
         return sequence(
             "SwapToScythe",
-            condition("NeedsScythe", needs),
-            action("PressF1", press, aftercast_ms=100),
+            condition("NeedsScythe", needs_scythe),
+            action("PressF1", press_f1, aftercast_ms=100),
         )
 
     def swap_to_shield_set(self) -> BehaviorTree:
-        def needs() -> bool:
+        def needs_shield() -> bool:
             return Agent.GetWeaponType(Player.GetAgentID())[0] == Weapon.Scythe
 
-        def press(node) -> BehaviorTree.NodeState:
+        def press_f2(node) -> BehaviorTree.NodeState:
             Keystroke.PressAndRelease(Key.F2.value)
             return BehaviorTree.NodeState.SUCCESS
 
         return sequence(
             "SwapToShieldSet",
-            condition("NeedsShield", needs),
-            action("PressF2", press, aftercast_ms=750),
+            condition("NeedsShield", needs_shield),
+            action("PressF2", press_f2, aftercast_ms=750),
         )
 
-    # ---- Branches ---------------------------------------------------------
-
     def outpost_guard(self) -> BehaviorTree:
-        """Skip the whole rotation when we're not in an explorable map.
-        Returns SUCCESS in outposts so the outer selector terminates
-        without touching any of the combat branches or the shared queue.
-        """
         return sequence(
             "OutpostGuard",
             condition("NotExplorable", lambda: not Routines.Checks.Map.IsExplorable()),
@@ -186,19 +172,13 @@ class DervBoneFarmer(BTBuildMgr):
         )
 
     def non_combat_guard(self) -> BehaviorTree:
-        """Setup / Loot / Wait phases: keep shield set equipped, do nothing else."""
         return sequence(
             "NonCombatGuard",
-            condition("InNonCombatPhase", lambda: self.status in _NON_COMBAT_PHASES),
+            condition("InNonCombatPhase", lambda: self.status in NON_COMBAT_PHASES),
             optional(self.swap_to_shield_set(), name="OptionalShieldSwap"),
         )
 
     def prepare_branch(self) -> BehaviorTree:
-        """Prepare: VoP → GA → VoS (in that order, one per tick).
-
-        Nothing that would strip an enchant (Pious Fury lives only in the
-        Kill refresh chain).
-        """
         return sequence(
             "PrepareBranch",
             condition("InPrepare", lambda: self.status == DervBuildFarmStatus.Prepare),
@@ -229,12 +209,9 @@ class DervBoneFarmer(BTBuildMgr):
         )
 
     def refresh_chain(self) -> BehaviorTree:
-        """PF → GA → VoS refresh. Commits only when both GA and VoS are off
-        cooldown (checked at tick time via `IsSkillIDReady`) — otherwise
-        PF would strip our current VoS and the chain would stall mid-refresh.
-        PF itself is optional; GA and VoS are required.
-        """
-        def both_ready() -> bool:
+        """PF → GA → VoS. PF strips VoS as its cost, so only commit when GA and VoS
+        are both off cooldown — otherwise the chain would strip VoS and stall."""
+        def ga_and_vos_ready() -> bool:
             return (
                 Routines.Checks.Skills.IsSkillIDReady(self.grenths_aura)
                 and Routines.Checks.Skills.IsSkillIDReady(self.vow_of_silence)
@@ -242,15 +219,13 @@ class DervBoneFarmer(BTBuildMgr):
 
         return sequence(
             "RefreshChain",
-            condition("GAandVoSReady", both_ready),
+            condition("GAandVoSReady", ga_and_vos_ready),
             self.cast_plain("PiousFury", self.pious_fury, aftercast_ms=100),
             self.cast_plain("GrenthsAura", self.grenths_aura, aftercast_ms=100),
             self.cast_plain("VowOfSilence", self.vow_of_silence, aftercast_ms=100),
         )
 
     def engagement(self) -> BehaviorTree:
-        """Swap to scythe, target nearest filtered enemy, hit adrenaline
-        attacks. Auto-attack fills the gap between adrenaline windows."""
         def enemy_present() -> bool:
             enemies, _, _ = self.filtered_enemies_in_range()
             return bool(enemies)
@@ -272,10 +247,6 @@ class DervBoneFarmer(BTBuildMgr):
         return sequence(
             "Engagement",
             condition("EnemyPresent", enemy_present),
-            # If we're already on scythe the swap sub-sequence would FAIL
-            # (its NeedsScythe condition is False), which would abort the
-            # engagement before we ever reach the interact/attack nodes.
-            # Wrap it so "no swap needed" reads as SUCCESS and we continue.
             optional(self.swap_to_scythe(), name="OptionalScytheSwap"),
             action("InteractNearest", interact_nearest, aftercast_ms=100),
             selector(
@@ -292,21 +263,11 @@ class DervBoneFarmer(BTBuildMgr):
                     lambda: self.has_enough_adrenaline(self.reap_impurities),
                     aftercast_ms=200,
                 ),
-                # Fall-through: swap + target counted as useful work; auto-attack
-                # fills the adrenaline gap between named attacks.
                 succeeder("AutoAttackFallthrough"),
             ),
         )
 
     def kill_branch(self) -> BehaviorTree:
-        """Kill priority order:
-
-          1. SoMS when VoS is up and SoMS isn't already stanced — primes
-             the next VoS cast to land instantly.
-          2. IAU whenever it's off cooldown — knockdown-immunity stance.
-          3. Refresh chain (PF → GA → VoS) when both GA and VoS are ready.
-          4. Engagement — swap, target, adrenaline attacks, auto-attack.
-        """
         return sequence(
             "KillBranch",
             condition("InKill", lambda: self.status == DervBuildFarmStatus.Kill),
@@ -326,8 +287,6 @@ class DervBoneFarmer(BTBuildMgr):
                 self.engagement(),
             ),
         )
-
-    # ---- Root rotation tree ----------------------------------------------
 
     def build_rotation_tree(self) -> BehaviorTree:
         return selector(

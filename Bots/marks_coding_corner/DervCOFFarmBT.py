@@ -1,16 +1,4 @@
-"""COF Farmer, BottingTree edition.
-
-Ports the old FSM-based `DervCOFFarm.py` to the new BT stack:
-
-- `BottingTree.Create(...)` with named planner steps (Init → Prepare Outpost → Farm Loop)
-- Custom BT skill rotation registered as a service tree; HeroAI stays disabled
-- Existing yield-based utils (`loot_utils`, `merch_utils`, `town_utils`) wrapped
-  as BT ActionNodes via a small `RunGenerator` shim
-- Farm phase (Setup/Prepare/Kill/Loot/Wait) written to the shared blackboard;
-  the rotation reads it every tick
-- Party-wipe recovery routes back to Prepare Outpost when inventory is low,
-  otherwise straight to Farm Loop
-"""
+"""COF Farmer — BottingTree edition."""
 from __future__ import annotations
 
 import os
@@ -19,16 +7,8 @@ from typing import Iterator
 
 import PySystem
 
-from Bots.marks_coding_corner.cof_rotation import ENEMY_BLACKLIST
-from Bots.marks_coding_corner.cof_rotation import PHASE_KILL
-from Bots.marks_coding_corner.cof_rotation import PHASE_LOOT
-from Bots.marks_coding_corner.cof_rotation import PHASE_PREPARE
-from Bots.marks_coding_corner.cof_rotation import PHASE_SETUP
-from Bots.marks_coding_corner.cof_rotation import PHASE_WAIT
-from Bots.marks_coding_corner.cof_rotation import get_derv_build
 from Bots.marks_coding_corner.utils.loot_utils import VIABLE_LOOT
 from Bots.marks_coding_corner.utils.loot_utils import get_valid_loot_array
-from Bots.marks_coding_corner.utils.loot_utils import identify_and_salvage_items
 from Bots.marks_coding_corner.utils.loot_utils import move_all_crafting_materials_to_storage
 from Bots.marks_coding_corner.utils.loot_utils import set_autoloot_options_for_custom_bots
 from Bots.marks_coding_corner.utils.merch_utils import buy_id_kits
@@ -43,11 +23,14 @@ from Py4GWCoreLib import Player
 from Py4GWCoreLib import Range
 from Py4GWCoreLib import Routines
 from Py4GWCoreLib.BottingTree import BottingTree
+from Py4GWCoreLib.Builds.Dervish.D_A.DervBoneFarmer import DervBoneFarmer
+from Py4GWCoreLib.Builds.Dervish.D_A.DervBoneFarmer import DervBuildFarmStatus
+from Py4GWCoreLib.Builds.Dervish.D_A.DervBoneFarmer import ENEMY_BLACKLIST_ENC_STRINGS
+from Py4GWCoreLib.Builds.Dervish.D_A.DervBoneFarmer import ENEMY_BLACKLIST_NAMES
+from Py4GWCoreLib.Builds.Dervish.D_A.DervBoneFarmer import is_blacklisted_enemy
 from Py4GWCoreLib.py4gwcorelib_src.BehaviorTree import BehaviorTree
 from Py4GWCoreLib.py4gwcorelib_src.Settings import Settings
 from Py4GWCoreLib.routines_src.BehaviourTrees import BT
-
-# ---- Constants -----------------------------------------------------------
 
 MODULE_NAME = "COF Farmer BT"
 INI_PATH = "Widgets/Automation/Bots/COF Farmer BT"
@@ -70,30 +53,27 @@ COF_QUEST_DIALOG = 0x832101
 COF_ENTER_DIALOG = 0x88
 COF_ENTRANCE_GADGET_DIALOG = 0x84
 
-# Loot list for COF (extends the shared VIABLE_LOOT).
 VIABLE_LOOT |= {ModelID.Golden_Rin_Relic, ModelID.Diessa_Chalice}
 
-# ---- Module-level bot handle --------------------------------------------
+botting_tree: BottingTree | None = None
+derv_build: DervBoneFarmer | None = None
+initialized = False
+ini_key = ""
 
-_botting_tree: BottingTree | None = None
-_initialized = False
-_ini_key = ""
 
-
-# ---- Utility: wrap yield-based generators as BT ActionNodes --------------
+def get_derv_build() -> DervBoneFarmer:
+    global derv_build
+    if derv_build is None:
+        derv_build = DervBoneFarmer()
+    return derv_build
 
 
 def RunGenerator(gen_factory: Callable[[], Iterator], name: str = "RunGenerator") -> BehaviorTree:
-    """Drive a yield-based generator (from the old `utils/` modules) as a BT node.
-
-    One `next()` per BT tick; StopIteration returns SUCCESS. The generator is
-    rebuilt from the factory on each entry so retries after failure work.
-    """
     state = {"gen": None}
 
-    def _tick(node: BehaviorTree.Node) -> BehaviorTree.NodeState:
+    def tick_next(node: BehaviorTree.Node) -> BehaviorTree.NodeState:
         if state["gen"] is None:
-            state["gen"] = gen_factory() # type: ignore
+            state["gen"] = gen_factory()  # type: ignore
         try:
             next(state["gen"])
             return BehaviorTree.NodeState.RUNNING
@@ -101,61 +81,115 @@ def RunGenerator(gen_factory: Callable[[], Iterator], name: str = "RunGenerator"
             state["gen"] = None
             return BehaviorTree.NodeState.SUCCESS
 
-    return BehaviorTree(BehaviorTree.ActionNode(name=name, action_fn=_tick, aftercast_ms=0))
-
-
-# ---- Utility: blackboard phase setters -----------------------------------
+    return BehaviorTree(BehaviorTree.ActionNode(name=name, action_fn=tick_next, aftercast_ms=0))
 
 
 def SetPhase(phase: str) -> BehaviorTree:
-    """Write the current farm phase onto the DervBoneFarmer BuildMgr, which
-    is what its ProcessSkillCasting reads to decide what to do this tick."""
-    def _set(node: BehaviorTree.Node) -> BehaviorTree.NodeState:
+    def set_phase(node: BehaviorTree.Node) -> BehaviorTree.NodeState:
         get_derv_build().status = phase
         return BehaviorTree.NodeState.SUCCESS
     return BehaviorTree(
-        BehaviorTree.ActionNode(name=f"SetPhase({phase})", action_fn=_set, aftercast_ms=0)
+        BehaviorTree.ActionNode(name=f"SetPhase({phase})", action_fn=set_phase, aftercast_ms=0)
     )
 
 
-# ---- Farm-loop custom nodes ---------------------------------------------
+def WaitForAreaClearOrDeath(
+    engage_range: float = Range.Earshot.value,
+    clear_range: float = Range.Earshot.value,
+    no_enemy_timeout_ms: int = 15_000,
+    clear_hold_ms: int = 1500,
+) -> BehaviorTree:
+    """Wait for combat to complete.
 
-
-def WaitForAreaClearOrDeath() -> BehaviorTree:
-    """Stay RUNNING while non-blacklisted enemies remain in spellcast range.
-
-    Returns SUCCESS when the area is clear, FAILURE if the player dies mid-fight
-    (which lets the outer sequence unwind and the party-wipe service take over).
+    Latches on first-enemy-seen (within engage_range) so we don't declare "clear"
+    while enemies are still running toward us. Once engaged, requires the area
+    (within clear_range) to be continuously clear for clear_hold_ms before
+    declaring SUCCESS — filters out transient flickers from knockbacks / spacing.
+    no_enemy_timeout_ms bails out of the engage wait if nothing ever appears.
     """
-    def _tick(node: BehaviorTree.Node) -> BehaviorTree.NodeState:
+    import time
+    state = {"engaged": False, "started_at": 0.0, "clear_since": 0.0}
+
+    def reset_state():
+        state["engaged"] = False
+        state["started_at"] = 0.0
+        state["clear_since"] = 0.0
+
+    def tick_check(node: BehaviorTree.Node) -> BehaviorTree.NodeState:
         if Agent.IsDead(Player.GetAgentID()):
+            reset_state()
             return BehaviorTree.NodeState.FAILURE
+
+        if state["started_at"] == 0.0:
+            state["started_at"] = time.monotonic()
+
         px, py = Player.GetXY()
-        enemies = Routines.Agents.GetFilteredEnemyArray(px, py, Range.Spellcast.value)
-        for enemy_id in enemies:
-            if Agent.GetModelID(enemy_id) not in ENEMY_BLACKLIST:
+
+        if not state["engaged"]:
+            engage_pool = Routines.Agents.GetFilteredEnemyArray(px, py, engage_range)
+            for enemy_id in engage_pool:
+                if not is_blacklisted_enemy(enemy_id):
+                    state["engaged"] = True
+                    break
+            else:
+                if (time.monotonic() - state["started_at"]) * 1000 >= no_enemy_timeout_ms:
+                    PySystem.Console.Log(
+                        "WaitForAreaClearOrDeath",
+                        f"No enemies appeared within {engage_range} in {no_enemy_timeout_ms}ms; giving up.",
+                        PySystem.Console.MessageType.Warning,
+                    )
+                    reset_state()
+                    return BehaviorTree.NodeState.SUCCESS
                 return BehaviorTree.NodeState.RUNNING
+
+        clear_pool = Routines.Agents.GetFilteredEnemyArray(px, py, clear_range)
+        for enemy_id in clear_pool:
+            if not is_blacklisted_enemy(enemy_id):
+                state["clear_since"] = 0.0
+                return BehaviorTree.NodeState.RUNNING
+
+        now = time.monotonic()
+        if state["clear_since"] == 0.0:
+            state["clear_since"] = now
+            return BehaviorTree.NodeState.RUNNING
+        if (now - state["clear_since"]) * 1000 < clear_hold_ms:
+            return BehaviorTree.NodeState.RUNNING
+
+        all_enemies = Routines.Agents.GetFilteredEnemyArray(px, py, Range.Compass.value)
+        remaining = [
+            {
+                "aid": aid,
+                "name": Agent.GetNameByID(aid),
+                "enc": Agent.GetEncNameStrByID(aid, literal=False),
+                "model_id": Agent.GetModelID(aid),
+            }
+            for aid in all_enemies if not Agent.IsDead(aid)
+        ]
+        if remaining:
+            PySystem.Console.Log(
+                "WaitForAreaClearOrDeath",
+                f"Declaring area clear. Enemies still alive within compass: {remaining}. "
+                f"Name blacklist={ENEMY_BLACKLIST_NAMES}. Enc blacklist={ENEMY_BLACKLIST_ENC_STRINGS}.",
+                PySystem.Console.MessageType.Warning,
+            )
+        reset_state()
         return BehaviorTree.NodeState.SUCCESS
 
     return BehaviorTree(
-        BehaviorTree.ActionNode(name="WaitForAreaClearOrDeath", action_fn=_tick, aftercast_ms=0)
+        BehaviorTree.ActionNode(name="WaitForAreaClearOrDeath", action_fn=tick_check, aftercast_ms=0)
     )
 
 
 def LootFilteredItems() -> BehaviorTree:
-    """Loot COF-viable items using the existing `loot_utils` filter."""
-    def _gen():
+    def loot_gen():
         yield from Routines.Yield.wait(500)
         filtered = get_valid_loot_array(viable_loot=VIABLE_LOOT, loot_salvagables=True)
         yield from Routines.Yield.Items.LootItemsWithMaxAttempts(filtered, log=False)
 
-    return RunGenerator(_gen, name="LootFilteredItems")
+    return RunGenerator(loot_gen, name="LootFilteredItems")
 
 
-# ---- Inventory-aware party-wipe recovery target --------------------------
-
-
-def _inventory_is_ready() -> bool:
+def inventory_is_ready() -> bool:
     salv = GLOBAL_CACHE.Inventory.GetModelCount(ModelID.Salvage_Kit)
     id_kits = GLOBAL_CACHE.Inventory.GetModelCount(ModelID.Identification_Kit)
     sup_id = GLOBAL_CACHE.Inventory.GetModelCount(ModelID.Superior_Identification_Kit)
@@ -163,17 +197,12 @@ def _inventory_is_ready() -> bool:
     return (id_kits + sup_id) > 0 and salv >= 3 and free >= 4
 
 
-def _choose_recovery_step_name() -> str:
-    return "Farm Loop" if _inventory_is_ready() else "Prepare Outpost"
-
-
-# ---- Planner steps ------------------------------------------------------
+def choose_recovery_step_name() -> str:
+    return "Farm Loop" if inventory_is_ready() else "Prepare Outpost"
 
 
 def InitializeBot() -> BehaviorTree:
-    bot = _ensure_botting_tree()
-    # Prime autoloot config, then run through Pacifist config (HeroAI off,
-    # isolation on, no auto-loot — our custom rotation owns combat).
+    bot = ensure_botting_tree()
     set_autoloot_options_for_custom_bots(salvage_golds=True, module_active=False)
     return BehaviorTree(
         BehaviorTree.SequenceNode(
@@ -185,7 +214,7 @@ def InitializeBot() -> BehaviorTree:
                     resurrection_scroll=False,
                     multi_account=False,
                 ),
-                SetPhase(PHASE_WAIT),
+                SetPhase(DervBuildFarmStatus.Wait),
             ],
         )
     )
@@ -198,20 +227,19 @@ def PrepareOutpost() -> BehaviorTree:
             children=[
                 BT.Map.TravelToOutpost(outpost_id=DOOMLORE_SHRINE_ID, log=True, timeout=30_000),
                 BT.Skills.LoadSkillbar("OgCjkqqLrSYiihdftXjhOXhX0kA", log=True),
-                # LoadSkillbar returns fast; give the client a moment to actually
-                # populate the 8 skill slots before the rotation reads them.
                 BT.Player.Wait(1_500),
-                SetPhase(PHASE_SETUP),
+                SetPhase(DervBuildFarmStatus.Setup),
                 BT.Player.Move(x=MERCHANT_MOVE_XY[0], y=MERCHANT_MOVE_XY[1], log=True),
-                _dialog_at(MERCHANT_XY, MERCHANT_DIALOG, "Open Merchant"),
+                dialog_at(MERCHANT_XY, MERCHANT_DIALOG, "Open Merchant"),
                 RunGenerator(withdraw_gold, name="WithdrawGold"),
                 RunGenerator(sell_non_essential_mats, name="SellNonEssentialMats"),
                 RunGenerator(buy_id_kits, name="BuyIDKits"),
                 RunGenerator(lambda: buy_salvage_kits(custom_amount=5), name="BuySalvageKits"),
-                RunGenerator(identify_and_salvage_items, name="IDAndSalvage"),
+                BT.Items.IdentifyInventoryItems(log=False),
+                BT.Items.SalvageInventoryItems(log=False),
                 RunGenerator(move_all_crafting_materials_to_storage, name="StoreCraftingMats"),
-                _dialog_at(MERCHANT_XY, COF_QUEST_DIALOG, "Take COF quest"),
-                _dialog_at(MERCHANT_XY, COF_ENTER_DIALOG, "Enter COF Level 1"),
+                dialog_at(MERCHANT_XY, COF_QUEST_DIALOG, "Take COF quest"),
+                dialog_at(MERCHANT_XY, COF_ENTER_DIALOG, "Enter COF Level 1"),
                 BT.Player.Wait(2_000),
                 BT.Map.WaitforMapLoad(map_id=COF_LEVEL_1_ID, log=True, timeout=60_000),
                 BT.Player.Move(x=SETUP_RESIGN_SPOT[0], y=SETUP_RESIGN_SPOT[1], log=True),
@@ -223,33 +251,32 @@ def PrepareOutpost() -> BehaviorTree:
 
 
 def FarmLoop() -> BehaviorTree:
-    """One full farm cycle. `repeat=True` on BottingTree.Create loops this."""
     return BehaviorTree(
         BehaviorTree.SequenceNode(
             name="Farm Loop",
             children=[
-                # In case we died last cycle and need to get back to town.
                 RunGenerator(return_to_outpost, name="EnsureAtOutpost"),
                 BT.Map.WaitforMapLoad(map_id=DOOMLORE_SHRINE_ID, log=True, timeout=60_000),
-                _dialog_at(MERCHANT_XY, COF_QUEST_DIALOG, "Take COF quest"),
-                _dialog_at(MERCHANT_XY, COF_ENTER_DIALOG, "Enter COF Level 1"),
+                dialog_at(MERCHANT_XY, COF_QUEST_DIALOG, "Take COF quest"),
+                dialog_at(MERCHANT_XY, COF_ENTER_DIALOG, "Enter COF Level 1"),
                 BT.Map.WaitforMapLoad(map_id=COF_LEVEL_1_ID, log=True, timeout=60_000),
                 BT.Player.Wait(2_000),
                 BT.Player.Move(x=COF_ENTRANCE_MOVE_XY[0], y=COF_ENTRANCE_MOVE_XY[1], log=True),
-                _dialog_at(COF_ENTRANCE_GADGET_XY, COF_ENTRANCE_GADGET_DIALOG, "Open COF gadget"),
+                dialog_at(COF_ENTRANCE_GADGET_XY, COF_ENTRANCE_GADGET_DIALOG, "Open COF gadget"),
                 BT.Player.Move(x=COF_PREP_SPOT[0], y=COF_PREP_SPOT[1], log=True),
-                SetPhase(PHASE_PREPARE),
+                SetPhase(DervBuildFarmStatus.Prepare),
                 BT.Player.Wait(3_000),
                 BT.Player.Move(x=COF_ATTACK_SPOT_1[0], y=COF_ATTACK_SPOT_1[1], log=True),
                 BT.Player.Move(x=COF_ATTACK_SPOT_2[0], y=COF_ATTACK_SPOT_2[1], log=True),
-                SetPhase(PHASE_KILL),
+                SetPhase(DervBuildFarmStatus.Kill),
                 WaitForAreaClearOrDeath(),
-                SetPhase(PHASE_LOOT),
+                SetPhase(DervBuildFarmStatus.Loot),
                 BT.Player.Wait(500),
                 LootFilteredItems(),
                 BT.Player.Wait(500),
-                RunGenerator(identify_and_salvage_items, name="IDAndSalvage"),
-                SetPhase(PHASE_WAIT),
+                BT.Items.IdentifyInventoryItems(log=False),
+                BT.Items.SalvageInventoryItems(log=False),
+                SetPhase(DervBuildFarmStatus.Wait),
                 BT.Party.Resign(log=True),
                 BT.Map.WaitforMapLoad(map_id=DOOMLORE_SHRINE_ID, log=True, timeout=60_000),
             ],
@@ -257,12 +284,7 @@ def FarmLoop() -> BehaviorTree:
     )
 
 
-def _dialog_at(xy: tuple[float, float], dialog_id: int, label: str) -> BehaviorTree:
-    """Move to `xy`, target the nearest NPC, interact, and send `dialog_id`.
-
-    Mirrors the old `bot.Dialogs.AtXY(x, y, dialog_id)` which internally paired
-    an NPC interact with a dialog send.
-    """
+def dialog_at(xy: tuple[float, float], dialog_id: int, label: str) -> BehaviorTree:
     return BehaviorTree(
         BehaviorTree.SequenceNode(
             name=f"DialogAt:{label}",
@@ -280,9 +302,6 @@ def _dialog_at(xy: tuple[float, float], dialog_id: int, label: str) -> BehaviorT
     )
 
 
-# ---- Planner assembly ---------------------------------------------------
-
-
 def get_execution_steps() -> list[tuple[str, Callable[[], BehaviorTree]]]:
     return [
         ("Initialize Bot", InitializeBot),
@@ -291,10 +310,10 @@ def get_execution_steps() -> list[tuple[str, Callable[[], BehaviorTree]]]:
     ]
 
 
-def _ensure_botting_tree() -> BottingTree:
-    global _botting_tree
-    if _botting_tree is None:
-        _botting_tree = BottingTree.Create(
+def ensure_botting_tree() -> BottingTree:
+    global botting_tree
+    if botting_tree is None:
+        botting_tree = BottingTree.Create(
             MODULE_NAME,
             main_routine=get_execution_steps(),
             routine_name="COFFarmSequence",
@@ -304,33 +323,25 @@ def _ensure_botting_tree() -> BottingTree:
             multi_account=False,
             isolation_enabled=True,
         )
-        # DervBoneFarmer's rotation runs as a BT service alongside the planner.
-        # HeroAI stays off (Config.Pacifist); the build reads self.status set
-        # by planner SetPhase(...) nodes and gates its own explorable /
-        # non-combat checks inside the rotation tree.
-        _botting_tree.AddBuild(get_derv_build())
-        # Route wipe recovery based on inventory state.
-        _botting_tree.EnsurePartyWipeRecoveryService(
-            default_step_name=_choose_recovery_step_name,
+        botting_tree.AddBuild(get_derv_build())
+        botting_tree.EnsurePartyWipeRecoveryService(
+            default_step_name=choose_recovery_step_name,
         )
-    return _botting_tree
-
-
-# ---- Widget entry point -------------------------------------------------
+    return botting_tree
 
 
 def main() -> None:
-    global _initialized, _ini_key
+    global initialized, ini_key
 
-    if not _initialized:
-        if not _ini_key:
-            _ini_key = Settings(f"{INI_PATH}/{INI_FILENAME}", "account").name
-            if not _ini_key:
+    if not initialized:
+        if not ini_key:
+            ini_key = Settings(f"{INI_PATH}/{INI_FILENAME}", "account").name
+            if not ini_key:
                 return
-        _ensure_botting_tree()
-        _initialized = True
+        ensure_botting_tree()
+        initialized = True
 
-    tree = _ensure_botting_tree()
+    tree = ensure_botting_tree()
     tree.tick()
     texture = os.path.join(
         PySystem.Console.get_projects_path(),
