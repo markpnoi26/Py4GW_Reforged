@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from Py4GWCoreLib import GLOBAL_CACHE
 from Py4GWCoreLib import Agent
 from Py4GWCoreLib import BTBuildMgr
@@ -77,6 +79,8 @@ def optional(cast_tree: BehaviorTree, name: str = "Optional") -> BehaviorTree:
 
 
 class DervBoneFarmer(BTBuildMgr):
+    ADRENALINE_CONFIRM_TIMEOUT_MS = 1500
+
     def __init__(self, match_only: bool = False):
         super().__init__(
             name="Derv Bone Farmer",
@@ -110,16 +114,55 @@ class DervBoneFarmer(BTBuildMgr):
         self.i_am_unstoppable = self.skills[7]
 
         self.status: str = DervBuildFarmStatus.Wait
+        self.attack_pending: tuple[int, int, float] | None = None
 
     def has_buff(self, skill_id: int) -> bool:
         return bool(Routines.Checks.Effects.HasBuff(Player.GetAgentID(), skill_id))
 
-    def has_enough_adrenaline(self, skill_id: int) -> bool:
+    def current_adrenaline(self, skill_id: int) -> int:
         slot = GLOBAL_CACHE.SkillBar.GetSlotBySkillID(skill_id)
         if not (1 <= slot <= 8):
-            return False
+            return -1
         data = GLOBAL_CACHE.SkillBar.GetSkillData(slot)
-        return data.adrenaline_a >= Skill.Data.GetAdrenaline(skill_id)
+        if data is None:
+            return -1
+        return int(getattr(data, "adrenaline_a", 0) or 0)
+
+    def attack_cast_settled(self) -> bool:
+        """One latch shared by both adrenaline attacks. The client keeps reporting the
+        pre-cast adrenaline for a few frames, and a per-skill latch would just make the
+        selector fall through and fire the other attack in the same breath. Times out
+        because an interrupted cast never spends adrenaline."""
+        if self.attack_pending is None:
+            return True
+
+        skill_id, value_at_cast, marked_at = self.attack_pending
+        if self.current_adrenaline(skill_id) < value_at_cast:
+            self.attack_pending = None
+            return True
+
+        if (time.monotonic() - marked_at) * 1000 >= self.ADRENALINE_CONFIRM_TIMEOUT_MS:
+            self.attack_pending = None
+            return True
+
+        return False
+
+    def has_enough_adrenaline(self, skill_id: int) -> bool:
+        if not Routines.Checks.Skills.CanCast():
+            return False
+        if not self.attack_cast_settled():
+            return False
+
+        required = int(Skill.Data.GetAdrenaline(skill_id) or 0)
+        if required <= 0:
+            return False
+
+        current = self.current_adrenaline(skill_id)
+        if current < required:
+            return False
+
+        self.attack_pending = (skill_id, current, time.monotonic())
+        return True
 
     def filtered_enemies_in_range(self):
         px, py = Player.GetXY()

@@ -1,173 +1,280 @@
-MODULE_NAME = "Script Runner"
-MODULE_ICON = "Textures/Module_Icons/Script Runner.png"
-OPTIONAL = True
-
 import os
-import traceback
 
+import Py4GW
 import PyImGui
-import PySystem
 
 from Py4GWCoreLib import Color, ImGui
-from Py4GWCoreLib.py4gwcorelib_src.script_manager import ScriptRegistry
-
-SCRIPTS_PATH = "Scripts"
-RELOAD_DELAY_MS = 350
-
-registry = ScriptRegistry(SCRIPTS_PATH)
-loaded = False
-search = ""
-function_filter = 0
-launched_id = ""
-last_error = ""
+from Py4GWCoreLib.py4gwcorelib_src.Settings import Settings
 
 
-def log(message, level=None):
+MODULE_NAME = "Script Runner"
+MODULE_ICON = "Textures/Module_Icons/Template.png"
+OPTIONAL = True
+
+__widget__ = {
+    "name": "Script Runner",
+    "enabled": False,
+    "category": "Coding",
+    "subcategory": "Tools",
+    "icon": "ICON_PLAY",
+    "quickdock": False,
+    "hidden": False,
+}
+
+INI_KEY = ""
+INI_PATH = "Widgets/ScriptRunner"
+INI_FILENAME = "ScriptRunner.ini"
+
+WINDOW_OPEN = True
+STATUS_TEXT = "idle"
+PROJECTS_PATH = ""
+
+SCRIPT_PATH_INPUT = ""
+LOG_PATH_INPUT = ""
+DELAY_MS_INPUT = 350
+LOG_TAIL_LINE_COUNT = 20
+
+
+def _log(message: str, level: int = None) -> None:
+    if level is None:
+        level = PySystem.Console.MessageType.Info
+    print(f"[{MODULE_NAME}] {message}")
     try:
-        PySystem.Console.Log(MODULE_NAME, message,
-                             level if level is not None else PySystem.Console.MessageType.Info)
+        PySystem.Console.Log(MODULE_NAME, message, level)
     except Exception:
         pass
 
 
-def script_status():
+def _default_script_path() -> str:
+    base = PROJECTS_PATH or os.getcwd()
+    return os.path.join(base, "native_labeled_frame_test.py")
+
+
+def _default_log_path() -> str:
+    base = PROJECTS_PATH or os.getcwd()
+    return os.path.join(base, "native_labeled_frame_test.log")
+
+
+def _load_config() -> None:
+    global SCRIPT_PATH_INPUT
+    global LOG_PATH_INPUT
+    global DELAY_MS_INPUT
+    global LOG_TAIL_LINE_COUNT
+
+    cfg = Settings(f"{INI_PATH}/{INI_FILENAME}", "account")
+    SCRIPT_PATH_INPUT = str(cfg.get_str("ScriptRunner", "script_path", _default_script_path()) or _default_script_path())
+    LOG_PATH_INPUT = str(cfg.get_str("ScriptRunner", "log_path", _default_log_path()) or _default_log_path())
+    DELAY_MS_INPUT = int(cfg.get_int("ScriptRunner", "delay_ms", DELAY_MS_INPUT) or DELAY_MS_INPUT)
+    LOG_TAIL_LINE_COUNT = int(cfg.get_int("ScriptRunner", "log_tail_count", LOG_TAIL_LINE_COUNT) or LOG_TAIL_LINE_COUNT)
+
+
+def _save_config() -> None:
+    cfg = Settings(f"{INI_PATH}/{INI_FILENAME}", "account")
+    cfg.set("ScriptRunner", "script_path", SCRIPT_PATH_INPUT)
+    cfg.set("ScriptRunner", "log_path", LOG_PATH_INPUT)
+    cfg.set("ScriptRunner", "delay_ms", DELAY_MS_INPUT)
+    cfg.set("ScriptRunner", "log_tail_count", LOG_TAIL_LINE_COUNT)
+
+
+def _set_status(message: str) -> None:
+    global STATUS_TEXT
+    STATUS_TEXT = message
+    _log(message)
+
+
+def _safe_status() -> str:
     try:
-        return str(PySystem.script_control.status())
+        return str(PySystem.Console.status())
     except Exception as exc:
-        return "unavailable (%s)" % exc
+        return f"status_error: {exc}"
 
 
-def resolve(path):
-    if os.path.isabs(path):
-        return path
-    return os.path.join(PySystem.Console.get_projects_path(), path)
+def _normalize_existing_path(path: str) -> str:
+    raw = str(path or "").strip().strip('"')
+    if not raw:
+        return ""
+    if os.path.isabs(raw):
+        return raw
+    return os.path.join(PROJECTS_PATH or os.getcwd(), raw)
 
 
-def launch(meta):
-    global launched_id, last_error
-    full = resolve(meta.path)
-    if not os.path.exists(full):
-        last_error = "missing: %s" % full
-        log(last_error, PySystem.Console.MessageType.Error)
+def _load_only() -> None:
+    path = _normalize_existing_path(SCRIPT_PATH_INPUT)
+    if not path or not os.path.exists(path):
+        _set_status(f"script_missing: {path}")
         return
+    PySystem.Console.load(path)
+    _set_status(f"loaded: {path}")
+
+
+def _run_only() -> None:
+    PySystem.Console.run()
+    _set_status(f"run_requested status={_safe_status()}")
+
+
+def _stop_only() -> None:
+    PySystem.Console.stop()
+    _set_status(f"stop_requested status={_safe_status()}")
+
+
+def _defer_reload_run() -> None:
+    path = _normalize_existing_path(SCRIPT_PATH_INPUT)
+    if not path or not os.path.exists(path):
+        _set_status(f"script_missing: {path}")
+        return
+    PySystem.Console.defer_stop_load_and_run(path, max(0, int(DELAY_MS_INPUT)))
+    _set_status(f"reload_run_enqueued delay_ms={DELAY_MS_INPUT}")
+
+
+def _run_native_test_preset() -> None:
+    global SCRIPT_PATH_INPUT
+    global LOG_PATH_INPUT
+
+    SCRIPT_PATH_INPUT = _default_script_path()
+    LOG_PATH_INPUT = _default_log_path()
+    _save_config()
+    _defer_reload_run()
+
+
+def _read_log_tail() -> list[str]:
+    path = _normalize_existing_path(LOG_PATH_INPUT)
+    if not path or not os.path.exists(path):
+        return [f"<log missing> {path}"]
     try:
-        PySystem.script_control.defer_stop_load_and_run(full, RELOAD_DELAY_MS)
-        launched_id = meta.id
-        last_error = ""
-        log("launching %s" % meta.name)
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            lines = handle.readlines()
+        tail_count = max(1, int(LOG_TAIL_LINE_COUNT))
+        return [line.rstrip("\r\n") for line in lines[-tail_count:]]
     except Exception as exc:
-        last_error = str(exc)
-        log("launch failed: %s" % traceback.format_exc(), PySystem.Console.MessageType.Error)
+        return [f"<log read error> {exc}"]
 
 
-def stop():
-    global launched_id, last_error
-    try:
-        PySystem.script_control.stop()
-        launched_id = ""
-        last_error = ""
-        log("stopped")
-    except Exception as exc:
-        last_error = str(exc)
-        log("stop failed: %s" % exc, PySystem.Console.MessageType.Error)
+def configure() -> None:
+    global SCRIPT_PATH_INPUT
+    global LOG_PATH_INPUT
+    global DELAY_MS_INPUT
+    global LOG_TAIL_LINE_COUNT
 
-
-def function_options():
-    return ["(all)"] + registry.functions()
-
-
-def visible_scripts():
-    options = function_options()
-    chosen = options[function_filter] if 0 <= function_filter < len(options) else "(all)"
-    return registry.query(function="" if chosen == "(all)" else chosen, text=search)
-
-
-def draw_toolbar():
-    global search, function_filter
-
-    if PyImGui.button("Refresh##sr"):
-        registry.refresh()
-    PyImGui.same_line(0.0, 6.0)
-    if registry.changed_on_disk():
-        PyImGui.text_colored("changed on disk", Color(255, 200, 100, 255).to_tuple_normalized())
-    else:
-        PyImGui.text("%d script(s)" % len(registry.scripts))
-
-    search = PyImGui.input_text("Search##sr", search)
-    function_filter = PyImGui.combo("Function##sr", function_filter, function_options())
-
-
-def draw_row(meta):
-    running = meta.id == launched_id
-    label = ("> " if running else "  ") + meta.name
-    if PyImGui.selectable(label + "##sr_" + meta.id, running):
-        launch(meta)
-    if PyImGui.is_item_hovered():
-        PyImGui.begin_tooltip()
-        PyImGui.text(meta.name)
-        PyImGui.separator()
-        PyImGui.text("function: %s" % (meta.function or "-"))
-        PyImGui.text("tags:     %s" % (" ".join(meta.tags) or "-"))
-        PyImGui.text("claims:   %s" % (" ".join(meta.claims) or "none"))
-        PyImGui.text("path:     %s" % meta.path)
-        if meta.error:
-            PyImGui.separator()
-            PyImGui.text_colored("error: %s" % meta.error, Color(255, 120, 120, 255).to_tuple_normalized())
-        PyImGui.end_tooltip()
-
-
-def draw_widget():
-    if not ImGui.Begin("", MODULE_NAME, flags=PyImGui.WindowFlags.AlwaysAutoResize):
-        ImGui.End("")
+    if not PyImGui.begin(f"{MODULE_NAME} Config"):
+        PyImGui.end()
         return
 
-    PyImGui.text("Console: %s" % script_status())
-    if launched_id:
-        PyImGui.text("Launched: %s" % launched_id)
-    if last_error:
-        PyImGui.text_colored(last_error, Color(255, 120, 120, 255).to_tuple_normalized())
+    PyImGui.text("Control Py4GW console script loading for rapid iteration.")
+    SCRIPT_PATH_INPUT = PyImGui.input_text("Script Path", SCRIPT_PATH_INPUT, 512)
+    LOG_PATH_INPUT = PyImGui.input_text("Log Path", LOG_PATH_INPUT, 512)
+    DELAY_MS_INPUT = PyImGui.input_int("Reload Delay (ms)", DELAY_MS_INPUT)
+    LOG_TAIL_LINE_COUNT = PyImGui.input_int("Log Tail Lines", LOG_TAIL_LINE_COUNT)
 
-    if PyImGui.button("Stop##sr"):
-        stop()
-    PyImGui.separator()
+    if PyImGui.button("Save Config##script_runner"):
+        _save_config()
+        _set_status("config_saved")
 
-    draw_toolbar()
-    PyImGui.separator()
-
-    scripts = visible_scripts()
-    if not scripts:
-        PyImGui.text("<no scripts>")
-    if PyImGui.begin_child("sr_list", (420.0, 260.0), 1, 0):
-        for meta in scripts:
-            draw_row(meta)
-    PyImGui.end_child()
-
-    errors = registry.errors()
-    if errors:
-        PyImGui.separator()
-        PyImGui.text_colored("%d script(s) with bad metadata" % len(errors),
-                             Color(255, 120, 120, 255).to_tuple_normalized())
-
-    ImGui.End("")
+    PyImGui.end()
 
 
-def tooltip():
+def tooltip() -> None:
     PyImGui.begin_tooltip()
-    PyImGui.text_colored(MODULE_NAME, Color(255, 200, 100, 255).to_tuple_normalized())
+    title_color = Color(255, 200, 100, 255)
+    PyImGui.text_colored(MODULE_NAME, title_color.to_tuple_normalized())
     PyImGui.separator()
-    PyImGui.text_wrapped("Browse and launch scripts from Scripts/ by their declared metadata.")
-    PyImGui.bullet_text("Filter by function, search by name.")
-    PyImGui.bullet_text("Launches through PySystem.script_control (one script at a time).")
-    PyImGui.bullet_text("Refresh re-reads metadata without importing anything.")
+    PyImGui.text("Loads, runs, stops, and reloads Py4GW scripts.")
+    PyImGui.bullet_text("Fast reload loop for test scripts.")
+    PyImGui.bullet_text("Preset for native_labeled_frame_test.py.")
+    PyImGui.bullet_text("Built-in log tail viewer.")
     PyImGui.end_tooltip()
 
 
-def main():
-    global loaded
-    if not loaded:
-        registry.reload()
-        loaded = True
-        log("discovered %d script(s) in %s" % (len(registry.scripts), SCRIPTS_PATH))
+def draw_widget() -> None:
+    global SCRIPT_PATH_INPUT
+    global LOG_PATH_INPUT
+    global DELAY_MS_INPUT
+    global LOG_TAIL_LINE_COUNT
+
+    if not ImGui.Begin(INI_KEY, MODULE_NAME, flags=PyImGui.WindowFlags.AlwaysAutoResize):
+        ImGui.End(INI_KEY)
+        return
+
+    script_path = _normalize_existing_path(SCRIPT_PATH_INPUT)
+    log_path = _normalize_existing_path(LOG_PATH_INPUT)
+
+    PyImGui.text(f"Console Status: {_safe_status()}")
+    PyImGui.text(f"Widget Status: {STATUS_TEXT}")
+    PyImGui.separator()
+
+    new_script = PyImGui.input_text("Script Path##script_runner", SCRIPT_PATH_INPUT, 512)
+    if new_script != SCRIPT_PATH_INPUT:
+        SCRIPT_PATH_INPUT = new_script
+        _save_config()
+
+    new_log = PyImGui.input_text("Log Path##script_runner", LOG_PATH_INPUT, 512)
+    if new_log != LOG_PATH_INPUT:
+        LOG_PATH_INPUT = new_log
+        _save_config()
+
+    new_delay = PyImGui.input_int("Reload Delay (ms)##script_runner", DELAY_MS_INPUT)
+    if new_delay != DELAY_MS_INPUT:
+        DELAY_MS_INPUT = max(0, int(new_delay))
+        _save_config()
+
+    new_tail_count = PyImGui.input_int("Log Tail Lines##script_runner", LOG_TAIL_LINE_COUNT)
+    if new_tail_count != LOG_TAIL_LINE_COUNT:
+        LOG_TAIL_LINE_COUNT = max(1, int(new_tail_count))
+        _save_config()
+
+    PyImGui.text(f"Resolved Script: {script_path}")
+    PyImGui.text(f"Resolved Log: {log_path}")
+
+    if PyImGui.button("Load##script_runner"):
+        _load_only()
+    if PyImGui.button("Run##script_runner"):
+        _run_only()
+    if PyImGui.button("Stop##script_runner"):
+        _stop_only()
+    if PyImGui.button("Reload + Run##script_runner"):
+        _defer_reload_run()
+    if PyImGui.button("Native Test Preset##script_runner"):
+        _run_native_test_preset()
+
+    PyImGui.separator()
+    PyImGui.text("Native UI test hotkeys after load:")
+    PyImGui.bullet_text("F6 opens DevText")
+    PyImGui.bullet_text("F7 clones with CreateLabeledFrameByFrameId")
+
+    PyImGui.separator()
+    PyImGui.text("Log Tail")
+    for line in _read_log_tail():
+        PyImGui.text_wrapped(line)
+
+    ImGui.End(INI_KEY)
+
+
+initialized = False
+
+
+def main() -> None:
+    global initialized
+    global INI_KEY
+    global PROJECTS_PATH
+
+    if initialized:
+        draw_widget()
+        return
+
+    try:
+        PROJECTS_PATH = PySystem.Console.get_projects_path()
+    except Exception:
+        try:
+            PROJECTS_PATH = PySystem.Console.get_projects_path()
+        except Exception:
+            PROJECTS_PATH = os.getcwd()
+
+    if not INI_KEY:
+        INI_KEY = Settings(f"{INI_PATH}/{INI_FILENAME}", "account").name
+        if not INI_KEY:
+            return
+        _load_config()
+
+    initialized = True
     draw_widget()
 
 
