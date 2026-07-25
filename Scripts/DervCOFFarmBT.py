@@ -1,6 +1,13 @@
 """COF Farmer — BottingTree edition."""
 from __future__ import annotations
 
+__script__ = {
+    "name": "COF Farmer BT",
+    "function": "farmer",
+    "tags": ["bone", "dungeon", "eotn", "dervish"],
+    "claims": ["character", "inventory"],
+}
+
 import os
 from typing import Callable
 from typing import Iterator
