@@ -68,7 +68,7 @@ def get_derv_build() -> DervBoneFarmer:
     return derv_build
 
 
-def RunGenerator(gen_factory: Callable[[], Iterator], name: str = "RunGenerator") -> BehaviorTree:
+def run_generator(gen_factory: Callable[[], Iterator], name: str = "RunGenerator") -> BehaviorTree:
     state = {"gen": None}
 
     def tick_next(node: BehaviorTree.Node) -> BehaviorTree.NodeState:
@@ -84,16 +84,16 @@ def RunGenerator(gen_factory: Callable[[], Iterator], name: str = "RunGenerator"
     return BehaviorTree(BehaviorTree.ActionNode(name=name, action_fn=tick_next, aftercast_ms=0))
 
 
-def SetPhase(phase: str) -> BehaviorTree:
-    def set_phase(node: BehaviorTree.Node) -> BehaviorTree.NodeState:
+def set_phase(phase: str) -> BehaviorTree:
+    def apply_phase(node: BehaviorTree.Node) -> BehaviorTree.NodeState:
         get_derv_build().status = phase
         return BehaviorTree.NodeState.SUCCESS
     return BehaviorTree(
-        BehaviorTree.ActionNode(name=f"SetPhase({phase})", action_fn=set_phase, aftercast_ms=0)
+        BehaviorTree.ActionNode(name=f"SetPhase({phase})", action_fn=apply_phase, aftercast_ms=0)
     )
 
 
-def WaitForAreaClearOrDeath(
+def wait_for_area_clear_or_death(
     engage_range: float = Range.Earshot.value,
     clear_range: float = Range.Earshot.value,
     no_enemy_timeout_ms: int = 15_000,
@@ -180,13 +180,13 @@ def WaitForAreaClearOrDeath(
     )
 
 
-def LootFilteredItems() -> BehaviorTree:
+def loot_filtered_items() -> BehaviorTree:
     def loot_gen():
         yield from Routines.Yield.wait(500)
         filtered = get_valid_loot_array(viable_loot=VIABLE_LOOT, loot_salvagables=True)
         yield from Routines.Yield.Items.LootItemsWithMaxAttempts(filtered, log=False)
 
-    return RunGenerator(loot_gen, name="LootFilteredItems")
+    return run_generator(loot_gen, name="LootFilteredItems")
 
 
 def inventory_is_ready() -> bool:
@@ -201,7 +201,7 @@ def choose_recovery_step_name() -> str:
     return "Farm Loop" if inventory_is_ready() else "Prepare Outpost"
 
 
-def InitializeBot() -> BehaviorTree:
+def initialize_bot() -> BehaviorTree:
     bot = ensure_botting_tree()
     set_autoloot_options_for_custom_bots(salvage_golds=True, module_active=False)
     return BehaviorTree(
@@ -214,13 +214,13 @@ def InitializeBot() -> BehaviorTree:
                     resurrection_scroll=False,
                     multi_account=False,
                 ),
-                SetPhase(DervBuildFarmStatus.Wait),
+                set_phase(DervBuildFarmStatus.Wait),
             ],
         )
     )
 
 
-def PrepareOutpost() -> BehaviorTree:
+def prepare_outpost() -> BehaviorTree:
     return BehaviorTree(
         BehaviorTree.SequenceNode(
             name="Prepare Outpost",
@@ -228,16 +228,16 @@ def PrepareOutpost() -> BehaviorTree:
                 BT.Map.TravelToOutpost(outpost_id=DOOMLORE_SHRINE_ID, log=True, timeout=30_000),
                 BT.Skills.LoadSkillbar("OgCjkqqLrSYiihdftXjhOXhX0kA", log=True),
                 BT.Player.Wait(1_500),
-                SetPhase(DervBuildFarmStatus.Setup),
+                set_phase(DervBuildFarmStatus.Setup),
                 BT.Player.Move(x=MERCHANT_MOVE_XY[0], y=MERCHANT_MOVE_XY[1], log=True),
                 dialog_at(MERCHANT_XY, MERCHANT_DIALOG, "Open Merchant"),
-                RunGenerator(withdraw_gold, name="WithdrawGold"),
-                RunGenerator(sell_non_essential_mats, name="SellNonEssentialMats"),
-                RunGenerator(buy_id_kits, name="BuyIDKits"),
-                RunGenerator(lambda: buy_salvage_kits(custom_amount=5), name="BuySalvageKits"),
+                run_generator(withdraw_gold, name="WithdrawGold"),
+                run_generator(sell_non_essential_mats, name="SellNonEssentialMats"),
+                run_generator(buy_id_kits, name="BuyIDKits"),
+                run_generator(lambda: buy_salvage_kits(custom_amount=5), name="BuySalvageKits"),
                 BT.Items.IdentifyInventoryItems(log=False),
                 BT.Items.SalvageInventoryItems(log=False),
-                RunGenerator(move_all_crafting_materials_to_storage, name="StoreCraftingMats"),
+                run_generator(move_all_crafting_materials_to_storage, name="StoreCraftingMats"),
                 dialog_at(MERCHANT_XY, COF_QUEST_DIALOG, "Take COF quest"),
                 dialog_at(MERCHANT_XY, COF_ENTER_DIALOG, "Enter COF Level 1"),
                 BT.Player.Wait(2_000),
@@ -250,12 +250,12 @@ def PrepareOutpost() -> BehaviorTree:
     )
 
 
-def FarmLoop() -> BehaviorTree:
+def farm_loop() -> BehaviorTree:
     return BehaviorTree(
         BehaviorTree.SequenceNode(
             name="Farm Loop",
             children=[
-                RunGenerator(return_to_outpost, name="EnsureAtOutpost"),
+                run_generator(return_to_outpost, name="EnsureAtOutpost"),
                 BT.Map.WaitforMapLoad(map_id=DOOMLORE_SHRINE_ID, log=True, timeout=60_000),
                 dialog_at(MERCHANT_XY, COF_QUEST_DIALOG, "Take COF quest"),
                 dialog_at(MERCHANT_XY, COF_ENTER_DIALOG, "Enter COF Level 1"),
@@ -264,19 +264,19 @@ def FarmLoop() -> BehaviorTree:
                 BT.Player.Move(x=COF_ENTRANCE_MOVE_XY[0], y=COF_ENTRANCE_MOVE_XY[1], log=True),
                 dialog_at(COF_ENTRANCE_GADGET_XY, COF_ENTRANCE_GADGET_DIALOG, "Open COF gadget"),
                 BT.Player.Move(x=COF_PREP_SPOT[0], y=COF_PREP_SPOT[1], log=True),
-                SetPhase(DervBuildFarmStatus.Prepare),
+                set_phase(DervBuildFarmStatus.Prepare),
                 BT.Player.Wait(3_000),
                 BT.Player.Move(x=COF_ATTACK_SPOT_1[0], y=COF_ATTACK_SPOT_1[1], log=True),
                 BT.Player.Move(x=COF_ATTACK_SPOT_2[0], y=COF_ATTACK_SPOT_2[1], log=True),
-                SetPhase(DervBuildFarmStatus.Kill),
-                WaitForAreaClearOrDeath(),
-                SetPhase(DervBuildFarmStatus.Loot),
+                set_phase(DervBuildFarmStatus.Kill),
+                wait_for_area_clear_or_death(),
+                set_phase(DervBuildFarmStatus.Loot),
                 BT.Player.Wait(500),
-                LootFilteredItems(),
+                loot_filtered_items(),
                 BT.Player.Wait(500),
                 BT.Items.IdentifyInventoryItems(log=False),
                 BT.Items.SalvageInventoryItems(log=False),
-                SetPhase(DervBuildFarmStatus.Wait),
+                set_phase(DervBuildFarmStatus.Wait),
                 BT.Party.Resign(log=True),
                 BT.Map.WaitforMapLoad(map_id=DOOMLORE_SHRINE_ID, log=True, timeout=60_000),
             ],
@@ -304,9 +304,9 @@ def dialog_at(xy: tuple[float, float], dialog_id: int, label: str) -> BehaviorTr
 
 def get_execution_steps() -> list[tuple[str, Callable[[], BehaviorTree]]]:
     return [
-        ("Initialize Bot", InitializeBot),
-        ("Prepare Outpost", PrepareOutpost),
-        ("Farm Loop", FarmLoop),
+        ("Initialize Bot", initialize_bot),
+        ("Prepare Outpost", prepare_outpost),
+        ("Farm Loop", farm_loop),
     ]
 
 
