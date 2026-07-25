@@ -56,6 +56,13 @@ def set_agent_color(agent_id: int, argb: int) -> None:
 
 def remove_agent_color(agent_id: int) -> bool: ...
 
+def set_agent_colors(rules: list[tuple[int, int]]) -> None:
+    """Replace the WHOLE per-agent store with `rules` (list of (agent_id, argb) tuples).
+    Ids not present are dropped; allegiance rules are untouched. This is the intended bulk
+    path: Python filters the agent array each data-phase pass and hands over the full matched
+    set in one call (instead of many set_agent_color/remove_agent_color)."""
+    ...
+
 def set_allegiance_color(allegiance: int, argb: int) -> None:
     """Override a whole allegiance category (1..6). Per-agent rules win."""
     ...
@@ -92,6 +99,11 @@ def set_gadget_color(agent_id: int, argb: int) -> None:
     ...
 
 def remove_gadget_color(agent_id: int) -> bool: ...
+
+def set_gadget_colors(rules: list[tuple[int, int]]) -> None:
+    """Replace the WHOLE per-gadget store with `rules` (list of (agent_id, argb) tuples).
+    The 'all gadgets' color is untouched."""
+    ...
 
 def set_all_gadget_color(argb: int) -> None:
     """Recolor every gadget name tag (ARGB). Per-gadget rules still win."""
@@ -167,6 +179,25 @@ def get_item_name_rules() -> list[tuple[str, int]]:
     ...
 
 # ===================== Shared =====================
+
+def master_enable() -> None:
+    """Master switch ON: activate all recolor detours (agents, gadgets, items). Driven by the
+    per-account System Settings toggle."""
+    ...
+
+def master_disable() -> None:
+    """Master switch OFF: deactivate all recolor detours so no detour code runs (zero overhead).
+    Rules and per-category gates are preserved."""
+    ...
+
+def is_master_enabled() -> bool: ...
+
+def refresh_name_tags() -> None:
+    """Force every overhead name tag to re-render (enqueued on the game thread) so a rule
+    change applies immediately instead of only after the game re-resolves a tag on hover or
+    state-change. Flash = SetGlobalNameTagVisibility(0) then (prev); both run in one frame so
+    there is no visible blink. No-op if the name-tag visibility symbols did not resolve."""
+    ...
 
 def clear_all_rules() -> None:
     """Drop every color rule across agents, gadgets, and items."""

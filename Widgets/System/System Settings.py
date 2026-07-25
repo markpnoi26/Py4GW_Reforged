@@ -23,6 +23,7 @@ for _name in [
     m for m in list(sys.modules)
     if m.startswith("Py4GWCoreLib.py4gwcorelib_src.system_settings")
     or m.startswith("Py4GWCoreLib.py4gwcorelib_src.name_obfuscation")
+    or m.startswith("Py4GWCoreLib.py4gwcorelib_src.agent_recolor")
 ]:
     del sys.modules[_name]
 
@@ -48,6 +49,21 @@ def draw() -> None:
                 from Py4GWCoreLib.py4gwcorelib_src.name_obfuscation import get_controller as _no_get
 
                 _no_get().apply_to_native()
+            except Exception:
+                pass
+            # Boot the agent-recolor engine: if this account has it enabled, register the
+            # profiled data-phase callback and turn on the native hooks.
+            try:
+                from Py4GWCoreLib.py4gwcorelib_src.agent_recolor import get_controller as _ar_get
+
+                _ar_get().boot()
+            except Exception:
+                pass
+            # Register the chat-command framework built-ins (/help) once, now that native is up.
+            try:
+                from Py4GWCoreLib.ChatCommands import ChatCommands
+
+                ChatCommands.boot()
             except Exception:
                 pass
             _applied = True
