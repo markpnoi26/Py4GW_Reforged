@@ -48,11 +48,8 @@ def item_is_identified(item_id: int) -> bool:
 
 
 def is_materials_confirm_window_open() -> bool:
-    from ...UIManager import UIManager
-    parent_hash = 140452905
-    yes_button_offsets = [6, 110, 6]
-    frame_id = UIManager.GetChildFrameID(parent_hash, yes_button_offsets)
-    return bool(frame_id) and UIManager.FrameExists(frame_id)
+    from ...Inventory import Inventory
+    return Inventory.IsSalvageChoiceMaterialConfirmVisible()
 
 
 class Items:
@@ -182,6 +179,25 @@ class Items:
             ConsoleLog("IdentifyItems", f"Identified {len(item_array)} items.", Console.MessageType.Info)
 
     @staticmethod
+    def clear_pending_salvage_confirm(item_id: int = 0, close_timeout_ms: int = 1500, poll_ms: int = 50):
+        """Accept any open rare-salvage confirm dialog. Firing a new salvage while
+        one is still open corrupts the client's salvage session and crashes it."""
+        from ...Inventory import Inventory
+
+        if not is_materials_confirm_window_open():
+            return True
+
+        status = yield from Inventory.HandleSalvageChoiceMaterialConfirmDialog(
+            auto_confirm=True,
+            queue_name="SALVAGE",
+            log_module="SalvageItemsAndVerify",
+            poll_ms=poll_ms,
+            close_timeout_ms=close_timeout_ms,
+            item_id=item_id,
+        )
+        return status in ("handled", "not_visible")
+
+    @staticmethod
     def SalvageItemsAndVerify(
         item_array: list[int],
         log: bool = False,
@@ -203,7 +219,19 @@ class Items:
             return
 
         salvaged_count = 0
+        fired_any_salvage = False
         for item_id in item_array:
+            dialog_cleared = True
+            if fired_any_salvage:
+                dialog_cleared = yield from Items.clear_pending_salvage_confirm(item_id, poll_ms=poll_ms)
+            if not dialog_cleared:
+                ConsoleLog(
+                    "SalvageItemsAndVerify",
+                    "Salvage confirm dialog stuck open; aborting rather than salvaging into it.",
+                    Console.MessageType.Error,
+                )
+                break
+
             if not item_still_present(item_id):
                 ConsoleLog("SalvageItemsAndVerify", f"Skip item_id={item_id}: not present.", Console.MessageType.Warning)
                 continue
@@ -219,13 +247,15 @@ class Items:
 
             ConsoleLog("SalvageItemsAndVerify", f"Firing salvage item_id={item_id} rarity={rarity} qty={initial_qty} kit={kit_id}.", Console.MessageType.Info)
             ActionQueueManager().AddAction("SALVAGE", Inventory.SalvageItem, item_id, kit_id)
+            fired_any_salvage = True
             queue_drained = yield from Items._wait_for_empty_queue("SALVAGE", timeout_ms=5000)
             if not queue_drained:
                 ConsoleLog("SalvageItemsAndVerify", f"Salvage queue never drained (item_id={item_id}).", Console.MessageType.Warning)
                 continue
 
             fired_at = time.monotonic()
-            confirm_clicked_at = 0.0
+            confirm_handled = False
+            salvage_stalled = False
 
             while True:
                 yield from wait(max(1, poll_ms))
@@ -238,19 +268,37 @@ class Items:
                     salvaged_count += 1
                     break
 
-                if needs_confirm and confirm_clicked_at == 0.0 and is_materials_confirm_window_open():
-                    ActionQueueManager().AddAction("SALVAGE", Inventory.AcceptSalvageMaterialsWindow)
-                    confirm_clicked_at = now
+                if needs_confirm and not confirm_handled and is_materials_confirm_window_open():
+                    status = yield from Inventory.HandleSalvageChoiceMaterialConfirmDialog(
+                        auto_confirm=True,
+                        queue_name="SALVAGE",
+                        log_module="SalvageItemsAndVerify",
+                        poll_ms=poll_ms,
+                        item_id=item_id,
+                    )
+                    confirm_handled = status == "handled"
+                    fired_at = time.monotonic()
+                    continue
 
                 if (now - fired_at) * 1000 >= per_item_timeout_ms:
                     ConsoleLog(
                         "SalvageItemsAndVerify",
                         f"Timeout item_id={item_id} rarity={rarity} needs_confirm={needs_confirm} "
                         f"initial_qty={initial_qty} current_qty={item_quantity(item_id)} "
-                        f"confirm_clicked_at={confirm_clicked_at:.3f}.",
+                        f"confirm_handled={confirm_handled}.",
                         Console.MessageType.Warning,
                     )
+                    salvage_stalled = True
                     break
+
+            if salvage_stalled:
+                ConsoleLog(
+                    "SalvageItemsAndVerify",
+                    f"Aborting: item_id={item_id} never left inventory, so a dialog is likely still open. "
+                    "Firing the next salvage now would crash the client.",
+                    Console.MessageType.Error,
+                )
+                break
 
             yield from wait(max(0, per_item_delay_ms))
 
