@@ -10,12 +10,9 @@ costs ~18ms for 150 scripts instead of ~3s for a full ``ast.parse`` of every mod
 
 import ast
 import os
-import time
 from dataclasses import dataclass
-from dataclasses import field
 
 HEADER_WINDOW = 8192
-EDIT_POLL_INTERVAL = 2.0
 
 RESOURCES = ("character", "inventory", "skills", "dialog", "ui", "sharedmem")
 
@@ -119,54 +116,44 @@ def build_meta(path: str, mtime: float) -> ScriptMeta:
 
 
 class ScriptRegistry:
-    """Flat registry of ``Scripts/*.py``, kept current by cheap polling.
+    """Flat registry of ``Scripts/*.py``, refreshed on demand.
 
-    ``poll()`` is frame-safe: it stats one directory (~0.03ms) and only walks the files
-    when the directory changed or the edit-poll interval elapsed. NTFS does not bump a
-    directory's mtime on in-place edits, which is why the interval sweep exists at all.
+    Nothing here runs on a timer. ``refresh()`` reconciles against disk and re-reads only
+    files whose mtime moved; ``changed_on_disk()`` answers the same question without
+    mutating anything, so a UI can badge "reload available" without reloading.
     """
 
-    def __init__(self, path: str = "Scripts", edit_poll_interval: float = EDIT_POLL_INTERVAL):
+    def __init__(self, path: str = "Scripts"):
         self.path = path
-        self.edit_poll_interval = edit_poll_interval
         self.scripts: dict = {}
         self.pinned: set = set()
         self.stale: set = set()
         self.revision = 0
-        self.dir_mtime = -1.0
-        self.last_sync = 0.0
 
-    def read_dir_mtime(self) -> float:
-        try:
-            return os.stat(self.path).st_mtime
-        except OSError:
-            return -1.0
-
-    def poll(self, now: float = None) -> bool:
-        now = time.perf_counter() if now is None else now
-        current = self.read_dir_mtime()
-        due = (now - self.last_sync) >= self.edit_poll_interval
-        if current == self.dir_mtime and not due:
-            return False
-        self.dir_mtime = current
-        self.last_sync = now
-        return self.sync()
-
-    def sync(self) -> bool:
-        """Reconcile the registry against disk, re-reading only what changed."""
+    def scan_mtimes(self) -> dict:
         try:
             names = [f for f in os.listdir(self.path) if f.endswith(".py")]
         except OSError:
-            names = []
-
-        seen = {}
+            return {}
+        out = {}
         for name in names:
             full = os.path.join(self.path, name)
             try:
-                seen[os.path.splitext(name)[0]] = (full, os.stat(full).st_mtime)
+                out[os.path.splitext(name)[0]] = (full, os.stat(full).st_mtime)
             except OSError:
                 continue
+        return out
 
+    def changed_on_disk(self) -> bool:
+        """Whether a refresh would change anything. Stats every file; no side effects."""
+        seen = self.scan_mtimes()
+        if set(seen) != set(self.scripts):
+            return True
+        return any(self.scripts[k].mtime != m for k, (_, m) in seen.items())
+
+    def refresh(self) -> bool:
+        """Reconcile the registry against disk, re-reading only what changed."""
+        seen = self.scan_mtimes()
         changed = False
         for script_id in list(self.scripts):
             if script_id not in seen:
@@ -194,9 +181,7 @@ class ScriptRegistry:
     def reload(self) -> bool:
         self.scripts.clear()
         self.stale.clear()
-        self.dir_mtime = -1.0
-        self.last_sync = 0.0
-        return self.sync()
+        return self.refresh()
 
     def pin(self, script_id: str) -> None:
         self.pinned.add(script_id)

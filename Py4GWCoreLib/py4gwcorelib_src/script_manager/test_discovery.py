@@ -90,29 +90,41 @@ class ConflictTests(unittest.TestCase):
 class RegistryTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
-        self.registry = discovery.ScriptRegistry(self.dir, edit_poll_interval=2.0)
+        self.registry = discovery.ScriptRegistry(self.dir)
 
-    def test_add_detected_by_poll(self):
+    def test_add_seen_on_refresh(self):
         self.registry.reload()
         write_script(self.dir, "Added", function="farmer", claims=["character"])
-        self.assertTrue(self.registry.poll())
+        self.assertTrue(self.registry.changed_on_disk())
+        self.assertTrue(self.registry.refresh())
         self.assertEqual(self.registry.get("Added").function, "farmer")
 
-    def test_inplace_edit_needs_interval_sweep(self):
+    def test_inplace_edit_seen_on_refresh(self):
         write_script(self.dir, "Edited", function="tool")
         self.registry.reload()
         time.sleep(0.05)
         write_script(self.dir, "Edited", function="farmer")
-        self.registry.dir_mtime = self.registry.read_dir_mtime()
-        self.assertFalse(self.registry.poll(now=self.registry.last_sync + 0.01))
-        self.assertTrue(self.registry.poll(now=self.registry.last_sync + 5.0))
+        self.assertTrue(self.registry.changed_on_disk())
+        self.assertTrue(self.registry.refresh())
         self.assertEqual(self.registry.get("Edited").function, "farmer")
 
-    def test_delete_detected(self):
+    def test_changed_on_disk_is_false_when_clean(self):
+        write_script(self.dir, "Quiet")
+        self.registry.reload()
+        self.assertFalse(self.registry.changed_on_disk())
+        self.assertFalse(self.registry.refresh())
+
+    def test_changed_on_disk_does_not_mutate(self):
+        self.registry.reload()
+        write_script(self.dir, "Peek")
+        self.assertTrue(self.registry.changed_on_disk())
+        self.assertIsNone(self.registry.get("Peek"))
+
+    def test_delete_seen_on_refresh(self):
         path = write_script(self.dir, "Doomed")
         self.registry.reload()
         os.remove(path)
-        self.assertTrue(self.registry.poll())
+        self.assertTrue(self.registry.refresh())
         self.assertIsNone(self.registry.get("Doomed"))
 
     def test_pinned_script_not_reread(self):
@@ -121,7 +133,7 @@ class RegistryTests(unittest.TestCase):
         self.registry.pin("Running")
         time.sleep(0.05)
         write_script(self.dir, "Running", function="farmer")
-        self.registry.poll(now=self.registry.last_sync + 5.0)
+        self.registry.refresh()
         self.assertEqual(self.registry.get("Running").function, "tool")
         self.assertIn("Running", self.registry.stale)
 
@@ -169,13 +181,13 @@ class RealScriptsTests(unittest.TestCase):
         self.assertGreater(len(registry.scripts), 0)
         self.assertEqual([s.id + ": " + s.error for s in registry.errors()], [])
 
-    def test_idle_poll_is_cheap(self):
+    def test_clean_refresh_is_cheap(self):
         registry = discovery.ScriptRegistry(self.root)
         registry.reload()
         start = time.perf_counter()
-        for _ in range(500):
-            registry.poll(now=0.0)
-        self.assertLess((time.perf_counter() - start) / 500 * 1000, 0.5)
+        for _ in range(20):
+            registry.refresh()
+        self.assertLess((time.perf_counter() - start) / 20 * 1000, 40.0)
 
 
 if __name__ == "__main__":
