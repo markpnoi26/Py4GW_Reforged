@@ -61,7 +61,6 @@ initialized = False
 ini_key = ""
 
 
-# Comment
 def get_derv_build() -> DervBoneFarmer:
     global derv_build
     if derv_build is None:
