@@ -1929,7 +1929,8 @@ class BTItems:
                         continue
                     if inst.is_identified:
                         continue
-                    if inst.rarity.name not in active_rarities:
+                    carries_hidden_upgrade = not inst.is_prefix_upgradable or not inst.is_suffix_upgradable
+                    if inst.rarity.name not in active_rarities and not carries_hidden_upgrade:
                         continue
                 except Exception:
                     continue
@@ -1998,7 +1999,10 @@ class BTItems:
                     rarity_name = inst.rarity.name
                     if rarity_name not in active_rarities:
                         continue
-                    if rarity_name != "White" and not inst.is_identified:
+                    carries_hidden_upgrade = not inst.is_prefix_upgradable or not inst.is_suffix_upgradable
+                    # An unidentified item can under-report its rarity as White, so rarity alone
+                    # is not enough to keep unidentified blues out of the salvage list.
+                    if not inst.is_identified and (rarity_name != "White" or carries_hidden_upgrade):
                         continue
                 except Exception:
                     continue

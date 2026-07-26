@@ -219,11 +219,8 @@ class Items:
             return
 
         salvaged_count = 0
-        fired_any_salvage = False
         for item_id in item_array:
-            dialog_cleared = True
-            if fired_any_salvage:
-                dialog_cleared = yield from Items.clear_pending_salvage_confirm(item_id, poll_ms=poll_ms)
+            dialog_cleared = yield from Items.clear_pending_salvage_confirm(item_id, poll_ms=poll_ms)
             if not dialog_cleared:
                 ConsoleLog(
                     "SalvageItemsAndVerify",
@@ -237,7 +234,6 @@ class Items:
                 continue
 
             _, rarity = GLOBAL_CACHE.Item.Rarity.GetRarity(item_id)
-            needs_confirm = rarity in ("Purple", "Gold")
             initial_qty = item_quantity(item_id)
 
             kit_id = GLOBAL_CACHE.Inventory.GetFirstSalvageKit()
@@ -247,7 +243,6 @@ class Items:
 
             ConsoleLog("SalvageItemsAndVerify", f"Firing salvage item_id={item_id} rarity={rarity} qty={initial_qty} kit={kit_id}.", Console.MessageType.Info)
             ActionQueueManager().AddAction("SALVAGE", Inventory.SalvageItem, item_id, kit_id)
-            fired_any_salvage = True
             queue_drained = yield from Items._wait_for_empty_queue("SALVAGE", timeout_ms=5000)
             if not queue_drained:
                 ConsoleLog("SalvageItemsAndVerify", f"Salvage queue never drained (item_id={item_id}).", Console.MessageType.Warning)
@@ -268,7 +263,7 @@ class Items:
                     salvaged_count += 1
                     break
 
-                if needs_confirm and not confirm_handled and is_materials_confirm_window_open():
+                if not confirm_handled and is_materials_confirm_window_open():
                     status = yield from Inventory.HandleSalvageChoiceMaterialConfirmDialog(
                         auto_confirm=True,
                         queue_name="SALVAGE",
@@ -283,7 +278,7 @@ class Items:
                 if (now - fired_at) * 1000 >= per_item_timeout_ms:
                     ConsoleLog(
                         "SalvageItemsAndVerify",
-                        f"Timeout item_id={item_id} rarity={rarity} needs_confirm={needs_confirm} "
+                        f"Timeout item_id={item_id} rarity={rarity} "
                         f"initial_qty={initial_qty} current_qty={item_quantity(item_id)} "
                         f"confirm_handled={confirm_handled}.",
                         Console.MessageType.Warning,
