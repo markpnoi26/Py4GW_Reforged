@@ -121,7 +121,8 @@ from .SkillManager import *
 from .GlobalCache import GLOBAL_CACHE
 from .Pathing import AutoPathing
 from .BuildMgr import BuildMgr
-from .BTBuildMgr import BTBuildMgr
+from .BldMgrBT import BldMgrBT
+from .BldMgrBT import BTBuildMgr
 from .Botting import BottingClass as Botting
 from .Context import GWContext
 #from .CombatEvents import CombatEventQueue, CombatEvents, COMBAT_EVENTS

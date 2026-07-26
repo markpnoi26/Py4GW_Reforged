@@ -5,7 +5,7 @@ from typing import Sequence
 from ..py4gwcorelib_src.BehaviorTree import BehaviorTree
 
 if TYPE_CHECKING:
-    from ..BTBuildMgr import BTBuildMgr
+    from ..BldMgrBT import BTBuildMgr
 
 
 class BottingTreeUpkeepMixin:
