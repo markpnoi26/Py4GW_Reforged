@@ -1,5 +1,11 @@
 # BuildMgr Retirement Blueprint
 
+> **SUPERSEDED.** The plan changed to coexistence: `BuildMgr` stays for the
+> legacy engine and generator builds; `BldMgrBT` is standalone and both share
+> `CombatServices`. See `docs/heroai_bt_migration_complete.md` (the full
+> record) and `docs/build_port_to_bldmgrbt.md` (port guide). Kept for the
+> analysis in §1-2, which is still accurate.
+
 Target: `BldMgrBT` becomes a standalone build base with no `BuildMgr` dependency,
 and `BuildMgr` is deleted once every build and skill module has migrated.
 
