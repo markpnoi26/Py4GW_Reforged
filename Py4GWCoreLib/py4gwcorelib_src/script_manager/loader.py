@@ -134,5 +134,8 @@ class ScriptLoader:
         return sys.modules.pop(module_name_for(script_id), None) is not None or module is not None
 
     def entry_points(self, module) -> dict:
-        return {key: getattr(module, key) for key in ("main", "draw", "update", "configure")
-                if callable(getattr(module, key, None))}
+        return {
+            key: getattr(module, key)
+            for key in ("main", "draw", "update", "configure")
+            if callable(getattr(module, key, None))
+        }

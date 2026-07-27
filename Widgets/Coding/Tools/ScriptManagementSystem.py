@@ -8,7 +8,8 @@ import traceback
 import PyImGui
 import PySystem
 
-from Py4GWCoreLib import Color, ImGui
+from Py4GWCoreLib import Color
+from Py4GWCoreLib import ImGui
 from Py4GWCoreLib.py4gwcorelib_src.script_manager import ScriptRegistry
 
 SCRIPTS_PATH = "Scripts"
@@ -24,8 +25,7 @@ last_error = ""
 
 def log(message, level=None):
     try:
-        PySystem.Console.Log(MODULE_NAME, message,
-                             level if level is not None else PySystem.Console.MessageType.Info)
+        PySystem.Console.Log(MODULE_NAME, message, level if level is not None else PySystem.Console.MessageType.Info)
     except Exception:
         pass
 
@@ -145,8 +145,9 @@ def draw_widget():
     errors = registry.errors()
     if errors:
         PyImGui.separator()
-        PyImGui.text_colored("%d script(s) with bad metadata" % len(errors),
-                             Color(255, 120, 120, 255).to_tuple_normalized())
+        PyImGui.text_colored(
+            "%d script(s) with bad metadata" % len(errors), Color(255, 120, 120, 255).to_tuple_normalized()
+        )
 
     ImGui.End("")
 

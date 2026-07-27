@@ -4,14 +4,13 @@ Rotation lives in sos_rotation.py — shared with the Any/Any_Rt variant, which
 legacy kept as a full duplicate.
 """
 
-from Py4GWCoreLib import BldMgrBT, Profession
+from Py4GWCoreLib import BldMgrBT
+from Py4GWCoreLib import Profession
 
-from .sos_rotation import (
-    SOS_OPTIONAL_SKILLS,
-    SOS_REQUIRED_SKILLS,
-    SOS_TEMPLATE_CODE,
-    SoSRotationMixin,
-)
+from .sos_rotation import SOS_OPTIONAL_SKILLS
+from .sos_rotation import SOS_REQUIRED_SKILLS
+from .sos_rotation import SOS_TEMPLATE_CODE
+from .sos_rotation import SoSRotationMixin
 
 
 class SoS_Spirit_Spammer(SoSRotationMixin, BldMgrBT):

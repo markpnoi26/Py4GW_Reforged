@@ -1,4 +1,5 @@
 """COF Farmer — BottingTree edition."""
+
 from __future__ import annotations
 
 __script__ = {
@@ -95,9 +96,8 @@ def set_phase(phase: str) -> BehaviorTree:
     def apply_phase(node: BehaviorTree.Node) -> BehaviorTree.NodeState:
         get_derv_build().status = phase
         return BehaviorTree.NodeState.SUCCESS
-    return BehaviorTree(
-        BehaviorTree.ActionNode(name=f"SetPhase({phase})", action_fn=apply_phase, aftercast_ms=0)
-    )
+
+    return BehaviorTree(BehaviorTree.ActionNode(name=f"SetPhase({phase})", action_fn=apply_phase, aftercast_ms=0))
 
 
 def wait_for_area_clear_or_death(
@@ -115,6 +115,7 @@ def wait_for_area_clear_or_death(
     no_enemy_timeout_ms bails out of the engage wait if nothing ever appears.
     """
     import time
+
     state = {"engaged": False, "started_at": 0.0, "clear_since": 0.0}
 
     def reset_state():
@@ -170,7 +171,8 @@ def wait_for_area_clear_or_death(
                 "enc": Agent.GetEncNameStrByID(aid, literal=False),
                 "model_id": Agent.GetModelID(aid),
             }
-            for aid in all_enemies if not Agent.IsDead(aid)
+            for aid in all_enemies
+            if not Agent.IsDead(aid)
         ]
         if remaining:
             PySystem.Console.Log(
@@ -182,9 +184,7 @@ def wait_for_area_clear_or_death(
         reset_state()
         return BehaviorTree.NodeState.SUCCESS
 
-    return BehaviorTree(
-        BehaviorTree.ActionNode(name="WaitForAreaClearOrDeath", action_fn=tick_check, aftercast_ms=0)
-    )
+    return BehaviorTree(BehaviorTree.ActionNode(name="WaitForAreaClearOrDeath", action_fn=tick_check, aftercast_ms=0))
 
 
 def loot_filtered_items() -> BehaviorTree:

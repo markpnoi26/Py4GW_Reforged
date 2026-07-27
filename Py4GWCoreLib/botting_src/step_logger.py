@@ -4,13 +4,15 @@ Writes one log file per bot Start() at Logs/Levelers/<bot>/<char>_<ts>.log
 so a crash, wipe, or manual stop leaves a clear trail of the last step
 that was executing.
 """
+
 from __future__ import annotations
 
 import os
 import re
 import time
 import traceback
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
+from typing import Optional
 
 if TYPE_CHECKING:
     from ..Botting import BottingClass
@@ -28,6 +30,7 @@ def _sanitize(name: str) -> str:
 def _project_root() -> str:
     try:
         import PySystem  # type: ignore
+
         root = str(PySystem.Console.get_projects_path() or "").strip()
         if root:
             return os.path.normpath(root)
@@ -78,6 +81,7 @@ class StepLogger:
     def _resolve_char_name(self) -> str:
         try:
             from ..Player import Player  # type: ignore
+
             name = Player.GetName() or ""
             return _sanitize(name)
         except Exception:
@@ -129,6 +133,7 @@ class StepLogger:
                     self._observe_state_change(current, done=(current is None and fsm.finished))
             except Exception as e:
                 self._safe_log_exception("update-observe", e)
+
         fsm.update = wrapped_update
 
     def _observe_state_change(self, current: Optional[str], done: bool) -> None:
@@ -198,9 +203,9 @@ class StepLogger:
             orig_start_at(step_name)
             self._begin_run(resume_step=step_name)
 
-        bot.Start = wrapped_start          # type: ignore[assignment]
-        bot.Stop = wrapped_stop            # type: ignore[assignment]
-        bot.StartAtStep = wrapped_start_at # type: ignore[assignment]
+        bot.Start = wrapped_start  # type: ignore[assignment]
+        bot.Stop = wrapped_stop  # type: ignore[assignment]
+        bot.StartAtStep = wrapped_start_at  # type: ignore[assignment]
 
     def _begin_run(self, resume_step: Optional[str] = None) -> None:
         # New run = new file.

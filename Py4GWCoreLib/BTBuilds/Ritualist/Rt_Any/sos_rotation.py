@@ -7,13 +7,18 @@ a BldMgrBT subclass, so BuildRegistry does not register it as a build of its own
 
 from dataclasses import dataclass
 
-from Py4GWCoreLib import Agent, Player, Routines
+from Py4GWCoreLib import Agent
+from Py4GWCoreLib import Player
+from Py4GWCoreLib import Routines
 from Py4GWCoreLib.Builds.Any.HeroAI import HeroAI as HeroAIBuild
 from Py4GWCoreLib.Builds.Skills import SkillsTemplate
-from Py4GWCoreLib.Skill import Skill
 from Py4GWCoreLib.py4gwcorelib_src.BehaviorTree import BehaviorTree
+from Py4GWCoreLib.Skill import Skill
 
-from ...nodes import cast, cond, guarded_cast, rotation_tree
+from ...nodes import cast
+from ...nodes import cond
+from ...nodes import guarded_cast
+from ...nodes import rotation_tree
 
 Signet_of_Spirits_ID = Skill.GetID("Signet_of_Spirits")
 Bloodsong_ID = Skill.GetID("Bloodsong")
@@ -86,24 +91,38 @@ class SoSRotationMixin:
                 cond("CloseToAggro", lambda node: self.snapshot(node).close_to_aggro),
             ],
             [
-                guarded_cast(self, "SpiritSiphonEmergency", equipped(Spirit_Siphon_ID),
-                             lambda: channeling().Spirit_Siphon(max_self_energy_pct=0.30)),
-                guarded_cast(self, "EbonVanguardAssassinSupport",
-                             equipped(Ebon_Vanguard_Assassin_Support_ID),
-                             lambda: anyskills().PvE.Ebon_Vanguard_Assassin_Support()),
-                guarded_cast(self, "Technobabble", equipped(Technobabble_ID),
-                             lambda: anyskills().PvE.Technobabble()),
-                guarded_cast(self, "GreatDwarfWeapon", equipped(Great_Dwarf_Weapon_ID),
-                             lambda: anyskills().NoAttribute.Great_Dwarf_Weapon()),
+                guarded_cast(
+                    self,
+                    "SpiritSiphonEmergency",
+                    equipped(Spirit_Siphon_ID),
+                    lambda: channeling().Spirit_Siphon(max_self_energy_pct=0.30),
+                ),
+                guarded_cast(
+                    self,
+                    "EbonVanguardAssassinSupport",
+                    equipped(Ebon_Vanguard_Assassin_Support_ID),
+                    lambda: anyskills().PvE.Ebon_Vanguard_Assassin_Support(),
+                ),
+                guarded_cast(self, "Technobabble", equipped(Technobabble_ID), lambda: anyskills().PvE.Technobabble()),
+                guarded_cast(
+                    self,
+                    "GreatDwarfWeapon",
+                    equipped(Great_Dwarf_Weapon_ID),
+                    lambda: anyskills().NoAttribute.Great_Dwarf_Weapon(),
+                ),
                 cast(self, "PainfulBond", lambda: channeling().Painful_Bond()),
                 cast(self, "SignetOfSpirits", lambda: channeling().Signet_of_Spirits()),
-                guarded_cast(self, "Vampirism", equipped(Vampirism_ID),
-                             lambda: anyskills().PvE.Vampirism()),
+                guarded_cast(self, "Vampirism", equipped(Vampirism_ID), lambda: anyskills().PvE.Vampirism()),
                 cast(self, "Bloodsong", lambda: channeling().Bloodsong()),
-                guarded_cast(self, "ArmorOfUnfeeling", equipped(Armor_of_Unfeeling_ID),
-                             lambda: channeling().Armor_of_Unfeeling()),
+                guarded_cast(
+                    self, "ArmorOfUnfeeling", equipped(Armor_of_Unfeeling_ID), lambda: channeling().Armor_of_Unfeeling()
+                ),
                 cast(self, "SummonSpirits", lambda: anyskills().NoAttribute.Summon_Spirits()),
-                guarded_cast(self, "SpiritSiphonOpportunistic", equipped(Spirit_Siphon_ID),
-                             lambda: channeling().Spirit_Siphon(max_self_energy_pct=0.70)),
+                guarded_cast(
+                    self,
+                    "SpiritSiphonOpportunistic",
+                    equipped(Spirit_Siphon_ID),
+                    lambda: channeling().Spirit_Siphon(max_self_energy_pct=0.70),
+                ),
             ],
         )

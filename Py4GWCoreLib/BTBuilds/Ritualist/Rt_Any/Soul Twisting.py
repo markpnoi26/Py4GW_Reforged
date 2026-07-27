@@ -6,13 +6,23 @@ Two gate tiers: `close_to_aggro` gates the whole rotation, then a nested
 
 from dataclasses import dataclass
 
-from Py4GWCoreLib import Agent, BldMgrBT, Player, Profession, Routines
+from Py4GWCoreLib import Agent
+from Py4GWCoreLib import BldMgrBT
+from Py4GWCoreLib import Player
+from Py4GWCoreLib import Profession
+from Py4GWCoreLib import Routines
 from Py4GWCoreLib.Builds.Any.HeroAI import HeroAI as HeroAIBuild
-from Py4GWCoreLib.Builds.Skills import HexRemovalPriority, SkillsTemplate
-from Py4GWCoreLib.Skill import Skill
+from Py4GWCoreLib.Builds.Skills import HexRemovalPriority
+from Py4GWCoreLib.Builds.Skills import SkillsTemplate
 from Py4GWCoreLib.py4gwcorelib_src.BehaviorTree import BehaviorTree
+from Py4GWCoreLib.Skill import Skill
 
-from ...nodes import cast, cond, guarded_cast, rotation_tree, selector, sequence
+from ...nodes import cast
+from ...nodes import cond
+from ...nodes import guarded_cast
+from ...nodes import rotation_tree
+from ...nodes import selector
+from ...nodes import sequence
 
 Soul_Twisting_ID = Skill.GetID("Soul_Twisting")
 Boon_of_Creation_ID = Skill.GetID("Boon_of_Creation")
@@ -70,24 +80,26 @@ class Soul_Twisting(BldMgrBT):
             return
 
         self.SetFallback("HeroAI", HeroAIBuild(standalone_fallback=True))
-        self.SetBlockedSkills([
-            Soul_Twisting_ID,
-            Boon_of_Creation_ID,
-            Shelter_ID,
-            Union_ID,
-            Displacement_ID,
-            Summon_Spirits_kurzick_ID,
-            Summon_Spirits_luxon_ID,
-            Armor_of_Unfeeling_ID,
-            Spirits_Gift_ID,
-            Breath_of_the_Great_Dwarf_ID,
-            Ebon_Vanguard_Assassin_Support_ID,
-            Ebon_Battle_Standard_of_Wisdom_ID,
-            I_Am_Unstoppable_ID,
-            Air_of_Superiority_ID,
-            Remove_Hex_ID,
-            Edge_of_Extinction_ID,
-        ])
+        self.SetBlockedSkills(
+            [
+                Soul_Twisting_ID,
+                Boon_of_Creation_ID,
+                Shelter_ID,
+                Union_ID,
+                Displacement_ID,
+                Summon_Spirits_kurzick_ID,
+                Summon_Spirits_luxon_ID,
+                Armor_of_Unfeeling_ID,
+                Spirits_Gift_ID,
+                Breath_of_the_Great_Dwarf_ID,
+                Ebon_Vanguard_Assassin_Support_ID,
+                Ebon_Battle_Standard_of_Wisdom_ID,
+                I_Am_Unstoppable_ID,
+                Air_of_Superiority_ID,
+                Remove_Hex_ID,
+                Edge_of_Extinction_ID,
+            ]
+        )
         self.skills: SkillsTemplate = SkillsTemplate(self)
 
     def get_bar_snapshot(self) -> SoulTwistingSnapshot:
@@ -115,32 +127,50 @@ class Soul_Twisting(BldMgrBT):
                 cond("CloseToAggro", lambda node: self.snapshot(node).close_to_aggro),
             ],
             [
-                cast(self, "RemoveHexHigh",
-                     lambda: self.skills.Monk.NoAttribute.Remove_Hex(min_priority=HexRemovalPriority.HIGH)),
+                cast(
+                    self,
+                    "RemoveHexHigh",
+                    lambda: self.skills.Monk.NoAttribute.Remove_Hex(min_priority=HexRemovalPriority.HIGH),
+                ),
                 guarded_cast(
-                    self, "AirOfSuperiority",
+                    self,
+                    "AirOfSuperiority",
                     lambda node: self.IsSkillEquipped(Air_of_Superiority_ID)
                     and (self.snapshot(node).in_aggro or self.IsCloseToAggro()),
                     lambda: anyskills().PvE.Air_of_Superiority(),
                 ),
-                guarded_cast(self, "EdgeOfExtinction", equipped(Edge_of_Extinction_ID),
-                             lambda: self.skills.Ranger.BeastMastery.Edge_of_Extinction()),
                 guarded_cast(
-                    self, "IAmUnstoppable",
+                    self,
+                    "EdgeOfExtinction",
+                    equipped(Edge_of_Extinction_ID),
+                    lambda: self.skills.Ranger.BeastMastery.Edge_of_Extinction(),
+                ),
+                guarded_cast(
+                    self,
+                    "IAmUnstoppable",
                     lambda node: self.snapshot(node).in_aggro,
                     lambda: anyskills().NoAttribute.I_Am_Unstoppable(),
                 ),
                 cast(self, "BoonOfCreation", lambda: spawning().Boon_of_Creation()),
                 cast(self, "SoulTwisting", lambda: spawning().Soul_Twisting()),
-                guarded_cast(self, "SummonSpiritsKurzick", equipped(Summon_Spirits_kurzick_ID),
-                             lambda: anyskills().NoAttribute.Summon_Spirits_kurzick()),
-                guarded_cast(self, "SummonSpiritsLuxon", equipped(Summon_Spirits_luxon_ID),
-                             lambda: anyskills().NoAttribute.Summon_Spirits_luxon()),
+                guarded_cast(
+                    self,
+                    "SummonSpiritsKurzick",
+                    equipped(Summon_Spirits_kurzick_ID),
+                    lambda: anyskills().NoAttribute.Summon_Spirits_kurzick(),
+                ),
+                guarded_cast(
+                    self,
+                    "SummonSpiritsLuxon",
+                    equipped(Summon_Spirits_luxon_ID),
+                    lambda: anyskills().NoAttribute.Summon_Spirits_luxon(),
+                ),
                 cast(self, "Shelter", lambda: communing().Shelter()),
                 cast(self, "Union", lambda: communing().Union()),
                 cast(self, "Displacement", lambda: communing().Displacement()),
                 guarded_cast(
-                    self, "RemoveHexMedium",
+                    self,
+                    "RemoveHexMedium",
                     lambda node: self.snapshot(node).player_energy_pct >= 0.50,
                     lambda: self.skills.Monk.NoAttribute.Remove_Hex(min_priority=HexRemovalPriority.MEDIUM),
                 ),
@@ -152,16 +182,22 @@ class Soul_Twisting(BldMgrBT):
                     selector(
                         "AggroRungs",
                         guarded_cast(
-                            self, "EbonVanguardAssassinSupport",
+                            self,
+                            "EbonVanguardAssassinSupport",
                             lambda node: self.snapshot(node).player_energy_pct >= 0.40,
                             lambda: anyskills().PvE.Ebon_Vanguard_Assassin_Support(),
                         ),
-                        cast(self, "EbonBattleStandardOfWisdom",
-                             lambda: anyskills().NoAttribute.Ebon_Battle_Standard_of_Wisdom()),
-                        cast(self, "BreathOfTheGreatDwarf",
-                             lambda: anyskills().NoAttribute.Breath_of_the_Great_Dwarf()),
+                        cast(
+                            self,
+                            "EbonBattleStandardOfWisdom",
+                            lambda: anyskills().NoAttribute.Ebon_Battle_Standard_of_Wisdom(),
+                        ),
+                        cast(
+                            self, "BreathOfTheGreatDwarf", lambda: anyskills().NoAttribute.Breath_of_the_Great_Dwarf()
+                        ),
                         guarded_cast(
-                            self, "RemoveHex",
+                            self,
+                            "RemoveHex",
                             lambda node: self.snapshot(node).player_energy_pct >= 0.70,
                             lambda: self.skills.Monk.NoAttribute.Remove_Hex(),
                         ),

@@ -24,7 +24,11 @@ spec.loader.exec_module(discovery)
 
 def write_script(directory, name, function="tool", claims=(), tags=(), lead=""):
     body = '__script__ = {"name": "%s", "function": "%s", "tags": %s, "claims": %s}\n' % (
-        name, function, list(tags), list(claims))
+        name,
+        function,
+        list(tags),
+        list(claims),
+    )
     path = os.path.join(directory, name + ".py")
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(lead + body)
@@ -33,8 +37,7 @@ def write_script(directory, name, function="tool", claims=(), tags=(), lead=""):
 
 class FindBlockTests(unittest.TestCase):
     def test_nested_dict(self):
-        self.assertEqual(discovery.find_block('__script__ = {"a": {"b": 1}, "c": 2}'),
-                         '{"a": {"b": 1}, "c": 2}')
+        self.assertEqual(discovery.find_block('__script__ = {"a": {"b": 1}, "c": 2}'), '{"a": {"b": 1}, "c": 2}')
 
     def test_brace_inside_string(self):
         self.assertEqual(discovery.find_block('__script__ = {"n": "a}b"}'), '{"n": "a}b"}')

@@ -53,10 +53,13 @@ class Sandbox(unittest.TestCase):
     def write_script(self, name="Demo", body=None):
         path = os.path.join(self.scripts, name + ".py")
         with open(path, "w") as h:
-            h.write(body if body is not None else
-                    '__script__ = {"name": "%s", "function": "tool", "tags": [], "claims": []}\n'
-                    "from Support.helper import VALUE\n"
-                    "def main():\n    return VALUE\n" % name)
+            h.write(
+                body
+                if body is not None
+                else '__script__ = {"name": "%s", "function": "tool", "tags": [], "claims": []}\n'
+                "from Support.helper import VALUE\n"
+                "def main():\n    return VALUE\n" % name
+            )
         return path
 
     def write_widget(self, imports, name="W.py"):
@@ -94,8 +97,10 @@ class LoadTests(Sandbox):
     def test_script_body_edit_takes_effect(self):
         path = self.write_script()
         self.loader.load("Demo", path)
-        self.write_script(body='__script__ = {"name": "Demo", "function": "tool",'
-                               ' "tags": [], "claims": []}\ndef main():\n    return "v2"\n')
+        self.write_script(
+            body='__script__ = {"name": "Demo", "function": "tool",'
+            ' "tags": [], "claims": []}\ndef main():\n    return "v2"\n'
+        )
         module, _ = self.loader.load("Demo", path)
         self.assertEqual(module.main(), "v2")
 
@@ -135,15 +140,16 @@ class ProtectionTests(Sandbox):
         for f in ("__init__.py", "leaf.py"):
             with open(os.path.join(self.root, "Support", "sub", f), "w") as h:
                 h.write("X = 1\n")
-        path = self.write_script(body='__script__ = {"name": "D", "function": "tool",'
-                                      ' "tags": [], "claims": []}\nimport Support.sub.leaf\n')
+        path = self.write_script(
+            body='__script__ = {"name": "D", "function": "tool",'
+            ' "tags": [], "claims": []}\nimport Support.sub.leaf\n'
+        )
         self.loader.load("Demo", path)
         _, dropped = self.loader.load("Demo", path)
         self.assertNotIn("Support.sub.leaf", dropped)
 
     def test_corelib_is_never_purgeable(self):
-        wide = loader_mod.ScriptLoader(widgets_path=self.widgets,
-                                       reload_roots=loader_mod.PROTECTED_ROOTS)
+        wide = loader_mod.ScriptLoader(widgets_path=self.widgets, reload_roots=loader_mod.PROTECTED_ROOTS)
         sys.modules.setdefault("Py4GWCoreLib", type(sys)("Py4GWCoreLib"))
         try:
             self.assertNotIn("Py4GWCoreLib", wide.purgeable())
