@@ -1,3 +1,4 @@
+import math
 import os
 import re
 from typing import TYPE_CHECKING, Callable, Protocol, cast
@@ -5,6 +6,7 @@ from typing import TYPE_CHECKING, Callable, Protocol, cast
 import PySystem
 import PyImGui
 
+from ..DXOverlay import DXOverlay
 from ..GlobalCache import GLOBAL_CACHE
 from ..ImGui import ImGui
 from ..Overlay import Overlay
@@ -16,6 +18,46 @@ if TYPE_CHECKING:
     from ..BottingTree import BottingTree
 
 
+# One long-lived DXOverlay for the occluded variant, built on first use so nothing is
+# constructed while that option is off. It must outlive the frame: a DXOverlay that draws
+# in 3D registers a world-pass callback for its own draw list, so building one per frame
+# would register one per frame.
+# Ground sampling for terrain-hugging path lines: one height sample per this many world
+# units, capped so a very long segment cannot explode into hundreds of pieces.
+_GROUND_SAMPLE_UNITS = 100.0
+_GROUND_SAMPLE_MAX_STEPS = 24
+
+# How far to lift the occluded lines off the ground. Smaller z is up, and DXOverlay's
+# floor_offset subtracts, so a positive value raises them. Needed because occluded draws
+# keep the depth test on (Setup3DView leaves ZFUNC LESSEQUAL): a line sitting exactly on the
+# terrain is coplanar with it and z-fights, which on something this thin reads as missing
+# rather than flickering. The other path drawers in the repo lift for the same reason -
+# SulfurousRunner by 50, Outpostrunner by 125.
+_OCCLUDED_FLOOR_OFFSET = 15.0
+
+# Occluded markers are bounded by COUNT, not by detail. DXOverlay issues one
+# DrawPrimitiveUP per ring sub-segment, so every marker costs _OCCLUDED_MARKER_SEGMENTS
+# draw calls no matter how small it is. Measured on a 50-waypoint route: lines alone are
+# ~200 calls per drain and run fine; adding a marker to every waypoint took it past ~600 and
+# tanked the framerate. Tuning the segment count cannot fix that - 50 markers at even 4
+# segments is another 200 - so only the nearest few get drawn, which is also the only place
+# occlusion is legible anyway.
+#
+# Set _OCCLUDED_MARKER_LIMIT = 0 to put markers back on the ImGui list entirely (batched,
+# free) and keep only the lines occluded.
+_OCCLUDED_MARKER_SEGMENTS = 8
+_OCCLUDED_MARKER_LIMIT = 10
+
+_occlusion_overlay: DXOverlay | None = None
+
+
+def _get_occlusion_overlay() -> DXOverlay:
+    global _occlusion_overlay
+    if _occlusion_overlay is None:
+        _occlusion_overlay = DXOverlay()
+    return _occlusion_overlay
+
+
 class _BottingTreeUIMovePathHost(Protocol):
     class _DrawableTree(Protocol):
         def draw(self) -> None: ...
@@ -23,6 +65,8 @@ class _BottingTreeUIMovePathHost(Protocol):
     blackboard: dict
     draw_move_path_enabled: bool
     draw_move_path_labels: bool
+    draw_move_path_directx: bool
+    draw_move_path_occluded: bool
     draw_move_path_thickness: float
     draw_move_waypoint_radius: float
     draw_move_current_waypoint_radius: float
@@ -31,6 +75,8 @@ class _BottingTreeUIMovePathHost(Protocol):
     def DrawMovePath(
         self,
         draw_labels: bool = False,
+        draw_directx: bool = False,
+        use_occlusion: bool = False,
         player_to_waypoint_color: Color = ColorPalette.GetColor('aqua'),
         remaining_path_color: Color = ColorPalette.GetColor('orange'),
         waypoint_color: Color = ColorPalette.GetColor('dodger_blue'),
@@ -102,6 +148,17 @@ class BottingTreeUIMovePathMixin:
                 'Draw Path Labels',
                 host.draw_move_path_labels,
             )
+            # Two independent switches so the surface and the depth test can be tested apart:
+            # ImGui, DirectX without occlusion, DirectX with occlusion. Geometry is identical
+            # in both DirectX modes, so the second checkbox changes only the depth test.
+            host.draw_move_path_directx = PyImGui.checkbox(
+                'Draw with DirectX',
+                host.draw_move_path_directx,
+            )
+            host.draw_move_path_occluded = PyImGui.checkbox(
+                'Use Occlusion (DirectX only)',
+                host.draw_move_path_occluded,
+            )
             host.draw_move_path_thickness = PyImGui.slider_float(
                 'Path Thickness',
                 host.draw_move_path_thickness,
@@ -127,6 +184,8 @@ class BottingTreeUIMovePathMixin:
             return
         host.DrawMovePath(
             draw_labels=host.draw_move_path_labels,
+            draw_directx=host.draw_move_path_directx,
+            use_occlusion=host.draw_move_path_occluded,
             path_thickness=host.draw_move_path_thickness,
             waypoint_radius=host.draw_move_waypoint_radius,
             current_waypoint_radius=host.draw_move_current_waypoint_radius,
@@ -135,6 +194,8 @@ class BottingTreeUIMovePathMixin:
     def DrawMovePath(
         self,
         draw_labels: bool = False,
+        draw_directx: bool = False,
+        use_occlusion: bool = False,
         player_to_waypoint_color: Color = ColorPalette.GetColor('aqua'),
         remaining_path_color: Color = ColorPalette.GetColor('orange'),
         waypoint_color: Color = ColorPalette.GetColor('dodger_blue'),
@@ -156,32 +217,89 @@ class BottingTreeUIMovePathMixin:
         player_x, player_y = Player.GetXY()
         overlay = Overlay()
 
+        # Player coords: the plane is the player's, so no multi-plane search. Everything
+        # else below has an unknown plane and keeps multi_plane on.
+        player_z = float(Overlay.FindZ(float(player_x), float(player_y), multi_plane=False))
+
         def _ground_z(x: float, y: float) -> float:
+            """Height of a route point. Its plane is unknown, so this is the multi-plane one."""
             return float(Overlay.FindZ(float(x), float(y)))
 
         def _is_visible(x: float, y: float) -> bool:
             return bool(GLOBAL_CACHE.Camera.IsPointInFOV(float(x), float(y)))
 
+        # ImGui projects world points to screen and has no depth test, so it can never be
+        # hidden by terrain. DXOverlay draws inside the world pass where GW's depth buffer is
+        # still live, which is the only way to actually occlude.
+        #
+        # Only the LINES switch. DXOverlay is an immediate per-triangle renderer -
+        # DrawPolyFilled3D issues one DrawPrimitiveUP per triangle, so a 24-segment marker is
+        # 24 draw calls and a 50-waypoint route would be 1200 of them, replayed on every
+        # world pass. A line is a single call, so the path itself costs about as much as the
+        # DXOverlay demo does. Markers and labels stay on the ImGui list, which batches them.
+        dx = _get_occlusion_overlay() if draw_directx else None
+        # Budget for occluded markers, spent nearest-first as the waypoint loop walks
+        # forward from the current one. Anything past it falls back to the batched ImGui
+        # marker, so the DX draw-call count stays fixed no matter how long the route is.
+        occluded_markers_left = [_OCCLUDED_MARKER_LIMIT if dx is not None else 0]
+
+        def _line3d(x1: float, y1: float, z1: float, x2: float, y2: float, z2: float,
+                    color: int, thickness: float) -> None:
+            if dx is not None:
+                # floor_offset stays on with occlusion off too: it changes the geometry, and
+                # the point of the two DirectX modes is that only the depth test differs.
+                dx.DrawLine3D(x1, y1, z1, x2, y2, z2, color, use_occlusion, 1, _OCCLUDED_FLOOR_OFFSET)
+            else:
+                overlay.DrawLine3D(x1, y1, z1, x2, y2, z2, color, thickness)
+
+        def _ground_line(x1: float, y1: float, x2: float, y2: float,
+                         color: int, thickness: float) -> None:
+            """A line that follows the ground instead of cutting straight through it.
+
+            A single line between two waypoints is straight in 3D, so it buries itself in
+            any rise between them. Sampling the height along the way and drawing the pieces
+            makes it hug the terrain. Cheap on both counts: FindZ is cached natively, and
+            ImGui batches the pieces into one vertex buffer.
+            """
+            length = math.hypot(x2 - x1, y2 - y1)
+            steps = max(1, min(int(length / _GROUND_SAMPLE_UNITS), _GROUND_SAMPLE_MAX_STEPS))
+            prev_x, prev_y = x1, y1
+            prev_z = _ground_z(x1, y1)
+            for step in range(1, steps + 1):
+                t = step / steps
+                next_x = x1 + (x2 - x1) * t
+                next_y = y1 + (y2 - y1) * t
+                next_z = _ground_z(next_x, next_y)
+                _line3d(prev_x, prev_y, prev_z, next_x, next_y, next_z, color, thickness)
+                prev_x, prev_y, prev_z = next_x, next_y, next_z
+
         def _draw_waypoint_marker(point_x: float, point_y: float, radius: float, color: int) -> None:
             if not _is_visible(point_x, point_y):
                 return
             point_z = _ground_z(point_x, point_y)
-            overlay.DrawPolyFilled3D(point_x, point_y, point_z, radius, color, 24)
+            if dx is not None and occluded_markers_left[0] > 0:
+                occluded_markers_left[0] -= 1
+                # A ring rather than a filled disc: DrawPolyFilled3D costs a draw call per
+                # TRIANGLE where the outline costs one per sub-segment, and auto_z keeps the
+                # whole ring a uniform floor_offset above the ground (the filled variant
+                # offsets the rim but not the centre, which domes it).
+                dx.DrawPoly3D(point_x, point_y, point_z, radius, color,
+                              _OCCLUDED_MARKER_SEGMENTS, use_occlusion, 1,
+                              _OCCLUDED_FLOOR_OFFSET, True)
+                return
+            # autoz=False: the marker is a flat disc at the waypoint's height. With autoz on,
+            # the overlay resolves the ground at all 24 segment vertices - 24 FindZ per
+            # marker instead of the one already done for point_z.
+            overlay.DrawPolyFilled3D(point_x, point_y, point_z, radius, color, 24, False)
 
         overlay.BeginDraw()
         try:
             if current_waypoint is not None:
                 current_x, current_y = current_waypoint
                 if _is_visible(player_x, player_y) and _is_visible(current_x, current_y):
-                    overlay.DrawLine3D(
-                        player_x,
-                        player_y,
-                        _ground_z(player_x, player_y),
-                        current_x,
-                        current_y,
-                        _ground_z(current_x, current_y),
-                        player_to_waypoint_color.to_color(),
-                        path_thickness,
+                    _ground_line(
+                        player_x, player_y, current_x, current_y,
+                        player_to_waypoint_color.to_color(), path_thickness,
                     )
 
             start_index = max(0, min(path_index, len(path_points) - 1))
@@ -190,16 +308,7 @@ class BottingTreeUIMovePathMixin:
                 x2, y2 = path_points[i + 1]
                 if not (_is_visible(x1, y1) and _is_visible(x2, y2)):
                     continue
-                overlay.DrawLine3D(
-                    x1,
-                    y1,
-                    _ground_z(x1, y1),
-                    x2,
-                    y2,
-                    _ground_z(x2, y2),
-                    remaining_path_color.to_color(),
-                    path_thickness,
-                )
+                _ground_line(x1, y1, x2, y2, remaining_path_color.to_color(), path_thickness)
 
             for i, (point_x, point_y) in enumerate(path_points[start_index:], start=start_index):
                 is_current = (i == move_data['current_waypoint_index'])
@@ -211,7 +320,13 @@ class BottingTreeUIMovePathMixin:
                     overlay.DrawText3D(point_x, point_y, point_z - 100.0, str(i), marker_color.to_color(), False, True, 2.0)
 
             if _is_visible(player_x, player_y):
-                overlay.DrawPoly3D(player_x, player_y, _ground_z(player_x, player_y), waypoint_radius, player_marker_color.to_color(), 24, 2.0, False)
+                if dx is not None:
+                    dx.DrawPoly3D(player_x, player_y, player_z, waypoint_radius,
+                                  player_marker_color.to_color(),
+                                  _OCCLUDED_MARKER_SEGMENTS, use_occlusion, 1,
+                                  _OCCLUDED_FLOOR_OFFSET, True)
+                else:
+                    overlay.DrawPoly3D(player_x, player_y, player_z, waypoint_radius, player_marker_color.to_color(), 24, 2.0, False)
         finally:
             overlay.EndDraw()
 

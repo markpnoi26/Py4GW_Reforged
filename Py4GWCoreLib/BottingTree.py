@@ -144,6 +144,8 @@ class BottingTree(
         self.paused = False
         self.draw_move_path_enabled = True
         self.draw_move_path_labels = False
+        self.draw_move_path_directx = False
+        self.draw_move_path_occluded = False
         self.draw_move_path_thickness = 4.0
         self.draw_move_waypoint_radius = 15.0
         self.draw_move_current_waypoint_radius = 20.0

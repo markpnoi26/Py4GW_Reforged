@@ -1,15 +1,14 @@
+import configparser
 from datetime import datetime, timedelta
 
 from Py4GWCoreLib import *
-from Py4GWCoreLib.py4gwcorelib_src.Settings import Settings
-from Py4GWCoreLib.py4gwcorelib_src.JsonFactory import JsonFactory
 from Py4GWCoreLib.py4gwcorelib_src.FileDialog import FileDialog
 
 MODULE_NAME = "Loot Manager"
 MODULE_ICON = "Textures/Module_Icons/LootManager.png"
 
-# In-overlay file picker (native ImGui filebrowser addon) — replaces tkinter, which needs a Tcl
-# runtime the injected client doesn't have. Immediate-mode: draw() is polled in the Save/Load block.
+# File picker. tkinter is unusable in the injected process (no init.tcl), so the library's
+# immediate-mode FileDialog replaces it: arm it on click, draw() each frame returns the path once.
 _file_dialog = FileDialog()
 
 
@@ -25,70 +24,182 @@ show_manual_editor = False
 show_black_list = False
 use_formula_based_nick = False
 
-# â€”â€”â€” Window Persistence Setup â€”â€”â€”
-ini_window = Settings("Widgets/Config/loot_window.ini", "global")
+last_config_check_time = 0
+last_config_timestamp = 0
+last_rarity_timestamp = 0
+
+# --- INI handling (local; the library's IniHandler was deleted) ---
+# Deliberately plain `configparser` on the real path. `Settings` is not used: it writes strictly
+# under /settings, which would MOVE this file out of Widgets/Config where it has always lived.
+class _IniFile:
+    """Minimal stand-in for the removed IniHandler - same methods, same file, same semantics."""
+
+    def __init__(self, filename: str):
+        self.filename = filename
+        self.last_modified = 0.0
+        self.config = configparser.ConfigParser()
+        self.reload()
+
+    def reload(self) -> configparser.ConfigParser:
+        if not os.path.exists(self.filename):
+            os.makedirs(os.path.dirname(self.filename), exist_ok=True)
+            with open(self.filename, "w") as f:
+                f.write("")
+            self.last_modified = os.path.getmtime(self.filename)
+            return self.config
+        current = os.path.getmtime(self.filename)
+        if current != self.last_modified:
+            self.last_modified = current
+            try:
+                self.config.read(self.filename, encoding="utf-8")
+            except Exception:
+                pass
+        return self.config
+
+    def read_int(self, section: str, key: str, default_value: int = 0) -> int:
+        try:
+            return self.reload().getint(section, key)
+        except Exception:
+            return default_value
+
+    def read_bool(self, section: str, key: str, default_value: bool = False) -> bool:
+        try:
+            return self.reload().getboolean(section, key)
+        except Exception:
+            return default_value
+
+    def write_key(self, section: str, key: str, value) -> None:
+        config = self.reload()
+        if not config.has_section(section):
+            config.add_section(section)
+        config.set(section, key, str(value))
+        try:
+            with open(self.filename, "w") as f:
+                config.write(f)
+            self.last_modified = os.path.getmtime(self.filename)
+        except Exception as exc:
+            PySystem.Console.Log(MODULE_NAME, f"Failed to save {self.filename}: {exc}",
+                                 Console.MessageType.Error)
+
+
+script_directory = PySystem.Console.get_projects_path() 
+# ——— Window Persistence Setup ———
+ini_window = _IniFile(os.path.join(script_directory, "Widgets", "Config", "loot_window.ini"))
 save_window_timer = Timer()
 save_window_timer.Start()
 
-# load lastâ€saved window state (fallback to 100,100 / un-collapsed)
-win_x         = ini_window.get_int("Loot Manager", "x", 100)
-win_y         = ini_window.get_int("Loot Manager", "y", 100)
-win_collapsed = ini_window.get_bool("Loot Manager", "collapsed", False)
+# load last‐saved window state (fallback to 100,100 / un-collapsed)
+win_x         = ini_window.read_int("Loot Manager", "x", 100)
+win_y         = ini_window.read_int("Loot Manager", "y", 100)
+win_collapsed = ini_window.read_bool("Loot Manager", "collapsed", False)
 first_run     = True
 
-# --- Persistence (jailed, self-persisting) ---
-# User config (per-account):
-_loot_config = JsonFactory("Widgets/LootManager/loot_config.json")
-_rarity_filter = JsonFactory("Widgets/LootManager/rarity_filter_data.json")
-# Bundled read-only data tables (shared; seeded from json/Defaults, never written):
-_modelid_drop_data = JsonFactory("Widgets/LootManager/modelid_drop_data.json", "global")
-_nick_cycles_doc = JsonFactory("Widgets/LootManager/Nick_cycles.json", "global")
+# --- File paths setup ---
+CONFIG_FILE = os.path.join(script_directory, "Widgets", "Config", "loot_config.json")
+MODELID_DROP_DATA_FILE = os.path.join(script_directory, "Widgets", "Data", "modelid_drop_data.json")
+RARITY_FILTER_DATA_FILE = os.path.join(script_directory, "Widgets", "Data", "rarity_filter_data.json")
 
 # --- Nick cycle setup ---
+NICK_CYCLES_FILE = os.path.join(script_directory, "Widgets", "Data", "Nick_cycles.json")
 nick_cycles = []
 weeks_future = 0
 
 def load_nick_cycles():
     global nick_cycles
-    data = _nick_cycles_doc.get_json("", [])
-    nick_cycles = data if isinstance(data, list) else []
+    if os.path.exists(NICK_CYCLES_FILE):
+        try:
+            with open(NICK_CYCLES_FILE, "r") as f:
+                nick_cycles = json.load(f)
+            
+            #PySystem.Console.Log("LootManager", f"Loaded {len(nick_cycles)} entries from Nick_cycles.json")
+        except Exception as e:
+            PySystem.Console.Log("LootManager", f"Failed to load Nick_cycles.json: {e}")
+    else:
+        PySystem.Console.Log("LootManager","Nick_cycles.json not found", Console.MessageType.Error)
 
-# --- Bundled data (read-only) ---
+# --- File Handling ---
 def load_modelid_drop_data():
-    data = _modelid_drop_data.get_json("", [])
-    return data if isinstance(data, list) else []
+    if os.path.exists(MODELID_DROP_DATA_FILE):
+        try:
+            with open(MODELID_DROP_DATA_FILE, "r") as f:
+                data = json.load(f)
+            #PySystem.Console.Log("LootManager", f"Loaded {len(data)} entries from modelid_drop_data.json")
+            return data
+        except Exception as e:
+            PySystem.Console.Log("LootManager", f"Failed to load modelid_drop_data.json: {str(e)}", Console.MessageType.Error)
+
+    else:
+        PySystem.Console.Log("LootManager","modelid_drop_data.json not found", Console.MessageType.Error)
+    return []
 
 def load_rarity_filter_data():
-    return {
-        "white": _rarity_filter.get_bool("white", False),
-        "blue": _rarity_filter.get_bool("blue", False),
-        "purple": _rarity_filter.get_bool("purple", False),
-        "gold": _rarity_filter.get_bool("gold", False),
-        "green": _rarity_filter.get_bool("green", False),
-        "gold_coins": _rarity_filter.get_bool("gold_coins", False),
-    }
+    if os.path.exists(RARITY_FILTER_DATA_FILE):
+        try:
+            with open(RARITY_FILTER_DATA_FILE, "r") as f:
+                data = json.load(f)
+            #PySystem.Console.Log("LootManager", "Loaded rarity_filter_data.json")
+            return data
+        except Exception as e:
+            PySystem.Console.Log("LootManager", f"Failed to load rarity_filter_data.json: {str(e)}", Console.MessageType.Error)
+    else:
+        PySystem.Console.Log("LootManager","rarity_filter_data.json not found", Console.MessageType.Error)
+    return {}
 
 def save_loot_config():
-    # Save both loot_items and blacklist into the jailed document (autosaved).
-    _loot_config.set_json("items", loot_items)
-    _loot_config.set_json("blacklist", list(loot_filter_singleton.GetBlacklist()))
+    try:
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+        # Save both loot_items and blacklist
+        config_data = {
+            "items": loot_items,
+            "blacklist": list(loot_filter_singleton.GetBlacklist())
+        }
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(config_data, f, indent=4)
+        #PySystem.Console.Log("LootManager", "Saved loot_config.json")
+    except Exception as e:
+        PySystem.Console.Log("LootManager", f"Failed to save loot_config.json: {str(e)}", Console.MessageType.Error)
 
 def save_rarity_filter_data():
-    _rarity_filter.set_bool("white", loot_filter_singleton.loot_whites)
-    _rarity_filter.set_bool("blue", loot_filter_singleton.loot_blues)
-    _rarity_filter.set_bool("purple", loot_filter_singleton.loot_purples)
-    _rarity_filter.set_bool("gold", loot_filter_singleton.loot_golds)
-    _rarity_filter.set_bool("green", loot_filter_singleton.loot_greens)
-    _rarity_filter.set_bool("gold_coins", loot_filter_singleton.loot_gold_coins)
+    try:
+        os.makedirs(os.path.dirname(RARITY_FILTER_DATA_FILE), exist_ok=True)
+        with open(RARITY_FILTER_DATA_FILE, "w") as f:
+            json.dump({
+                "white": loot_filter_singleton.loot_whites,
+                "blue": loot_filter_singleton.loot_blues,
+                "purple": loot_filter_singleton.loot_purples,
+                "gold": loot_filter_singleton.loot_golds,
+                "green": loot_filter_singleton.loot_greens,
+                "gold_coins": loot_filter_singleton.loot_gold_coins,   # ← NEW
+            }, f, indent=4)
+        #PySystem.Console.Log("LootManager", "Saved rarity_filter_data.json")
+    except Exception as e:
+        PySystem.Console.Log("LootManager", f"Failed to save rarity_filter_data.json: {str(e)}", Console.MessageType.Error)
 
 def load_loot_config():
     """
     Merge saved user settings back onto the fresh catalog.
     """
-    # 1) Read saved data from the jailed document
-    saved_items = {entry["model_id"]: entry for entry in _loot_config.get_json("items", [])}
-    saved_blacklist = _loot_config.get_json("blacklist", [])
-    saved_dye_whitelist = _loot_config.get_json("dye_whitelist", [])
+    # 1) Read saved data
+    saved_items = {}
+    saved_blacklist = []
+    saved_dye_whitelist = []
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                data = json.load(f)
+                # Handle both old format (just items) and new format (items + blacklist + dye_whitelist)
+                if isinstance(data, list):
+                    # Old format - just items
+                    for entry in data:
+                        saved_items[entry["model_id"]] = entry
+                else:
+                    # New format - items, blacklist, and dye_whitelist
+                    for entry in data.get("items", []):
+                        saved_items[entry["model_id"]] = entry
+                    saved_blacklist = data.get("blacklist", [])
+                    saved_dye_whitelist = data.get("dye_whitelist", [])
+        except Exception as e:
+            PySystem.Console.Log("LootManager", f"Failed to parse {CONFIG_FILE}: {e}", Console.MessageType.Error)
 
     # 2) Clear the whitelist, blacklist, and dye whitelist
     loot_filter_singleton.ClearWhitelist()
@@ -133,14 +244,14 @@ def load_loot_config():
                         mid = getattr(ModelID, name)
                 loot_filter_singleton.AddToWhitelist(mid)
 
-    # 5) Always keep gold coins if that toggleâ€™s on
+    # 5) Always keep gold coins if that toggle’s on
     if loot_filter_singleton.loot_gold_coins:
         loot_filter_singleton.AddToWhitelist(ModelID.Gold_Coins.value)
 
     # Rebuild singleton whitelist
     loot_filter_singleton.ClearWhitelist()
     for item in loot_items:
-        if item.get("enabled", False) and item.get("group") != "Dyes":  # â† guard out dyes
+        if item.get("enabled", False) and item.get("group") != "Dyes":  # ← guard out dyes
             model_id = item.get("model_id")
             if isinstance(model_id, str) and model_id.startswith("ModelID."):
                 model_id_name = model_id.split("ModelID.")[1]
@@ -148,7 +259,7 @@ def load_loot_config():
                     model_id = getattr(ModelID, model_id_name)
             loot_filter_singleton.AddToWhitelist(_normalize_model_id(model_id))
 
-    # â€”â€”â€” KEEP GOLD COINS WHITELISTED â€”â€”â€”
+    # ——— KEEP GOLD COINS WHITELISTED ———
     if loot_filter_singleton.loot_gold_coins:
         # ensure you have ModelID.Gold_Coin in your enum
         loot_filter_singleton.AddToWhitelist(ModelID.Gold_Coins.value)
@@ -168,38 +279,43 @@ def load_rarity_filter_settings():
     if loot_filter_singleton.loot_gold_coins:
         loot_filter_singleton.AddToWhitelist(ModelID.Gold_Coins.value)
 
-def _export_doc(path: str) -> JsonFactory:
-    """Map a user-picked path to a jailed export document (by file name only)."""
-    base = path.replace("\\", "/").rstrip("/").split("/")[-1] or "loot_export.json"
-    if not base.endswith(".json"):
-        base += ".json"
-    return JsonFactory("Widgets/LootManager/Exports/" + base)
-
 def save_loot_config_to(path: str):
-    doc = _export_doc(path)
-    doc.set_json("items", loot_items)
-    doc.set_json("blacklist", list(loot_filter_singleton.GetBlacklist()))
-    doc.set_json("dye_whitelist", list(loot_filter_singleton.GetDyeWhitelist()))
-    doc.set_json("rarity", {
-        "loot_whites": loot_filter_singleton.loot_whites,
-        "loot_blues": loot_filter_singleton.loot_blues,
-        "loot_purples": loot_filter_singleton.loot_purples,
-        "loot_golds": loot_filter_singleton.loot_golds,
-        "loot_greens": loot_filter_singleton.loot_greens,
-        "loot_gold_coins": loot_filter_singleton.loot_gold_coins,
-    })
-    PySystem.Console.Log("LootManager", f"[INFO] Saved loot config to: {doc.name}")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        output = {
+            "items": loot_items,
+            "blacklist": list(loot_filter_singleton.GetBlacklist()),
+            "dye_whitelist": list(loot_filter_singleton.GetDyeWhitelist()),
+            "rarity": {
+                "loot_whites": loot_filter_singleton.loot_whites,
+                "loot_blues": loot_filter_singleton.loot_blues,
+                "loot_purples": loot_filter_singleton.loot_purples,
+                "loot_golds": loot_filter_singleton.loot_golds,
+                "loot_greens": loot_filter_singleton.loot_greens,
+                "loot_gold_coins": loot_filter_singleton.loot_gold_coins,
+            }
+        }
+        with open(path, "w") as f:
+            json.dump(output, f, indent=4)
+        PySystem.Console.Log("LootManager", f"[INFO] Saved loot config to: {path}")
+    except Exception as e:
+        PySystem.Console.Log("LootManager", f"Failed to save custom loot config: {e}", Console.MessageType.Error)
 
 def load_loot_config_from(path: str):
-    doc = _export_doc(path)
-    if not doc.has("items") and not doc.has("blacklist") and not doc.has("rarity"):
-        PySystem.Console.Log("LootManager", f"Export not found: {doc.name}", Console.MessageType.Error)
+    if not os.path.exists(path):
+        PySystem.Console.Log("LootManager", f"File not found: {path}", Console.MessageType.Error)
         return
 
-    saved_items = {entry["model_id"]: entry for entry in doc.get_json("items", [])}
-    saved_blacklist = doc.get_json("blacklist", [])
-    saved_dye_whitelist = doc.get_json("dye_whitelist", [])
-    rarity = doc.get_json("rarity", {})
+    try:
+        with open(path, "r") as f:
+            raw = json.load(f)
+            saved_items = {entry["model_id"]: entry for entry in raw.get("items", [])}
+            saved_blacklist = raw.get("blacklist", [])
+            saved_dye_whitelist = raw.get("dye_whitelist", [])
+            rarity = raw.get("rarity", {})
+    except Exception as e:
+        PySystem.Console.Log("LootManager", f"Failed to load from {path}: {e}", Console.MessageType.Error)
+        return
 
     loot_filter_singleton.ClearWhitelist()
     loot_filter_singleton.ClearBlacklist()
@@ -248,7 +364,7 @@ def load_loot_config_from(path: str):
 
 # --- Setup ---
 def setup():
-    global initialized, loot_items
+    global initialized, loot_items, last_config_timestamp
 
     if not initialized:
         _raw_catalog = load_modelid_drop_data()
@@ -291,7 +407,9 @@ def setup():
         # Set up default dye whitelist if none exists
         if not loot_filter_singleton.GetDyeWhitelist():
             setup_dye_whitelist()
-
+        
+        if os.path.exists(CONFIG_FILE):
+            last_config_timestamp = os.path.getmtime(CONFIG_FILE)
         initialized = True
 
 def setup_dye_whitelist():
@@ -364,13 +482,21 @@ def DrawWindow():
     if not Routines.Checks.Map.MapValid():
         return
 
-    # Window geometry delegated to ImGui native persistence
+    # 1) On first draw, restore last position & collapsed state
+    if first_run:
+        PyImGui.set_next_window_pos(win_x, win_y)
+        PyImGui.set_next_window_collapsed(win_collapsed, 0)
+        first_run = False
 
     # 2) Begin the window (returns False if collapsed)
     opened = PyImGui.begin("Loot Manager", PyImGui.WindowFlags.AlwaysAutoResize)
 
+    # 3) Immediately grab the live collapse & position, even if collapsed
+    new_collapsed = PyImGui.is_window_collapsed()
+    end_pos       = PyImGui.get_window_pos()
+
     if opened:
-        # â€”â€” Debug Settings â€”â€”
+        # —— Debug Settings ——
         if PyImGui.tree_node("Debug Settings"):
             include_model_id_in_tooltip = PyImGui.checkbox(
                 "Display ModelID In Hovered Text", include_model_id_in_tooltip
@@ -385,7 +511,7 @@ def DrawWindow():
             )
             PyImGui.tree_pop()
 
-        #  Save/Load Configs”
+        # ——— Save/Load Configs ———
         PyImGui.separator()
         PyImGui.text("Save/Load Configs")
         PyImGui.separator()
@@ -400,7 +526,7 @@ def DrawWindow():
         if PyImGui.button(f"{IconsFontAwesome5.ICON_FILE_UPLOAD} Load from File"):
             _file_dialog.open_open("Load Loot Config", valid_types=".json", tag="load")
 
-        # Immediate-mode picker: draw it every frame; it returns the chosen path once on confirm.
+        # Immediate-mode picker: drawn every frame; returns the chosen path once on confirm.
         _picked = _file_dialog.draw()
         if _picked:
             if _file_dialog.tag == "save":
@@ -514,7 +640,7 @@ def DrawWindow():
                             loot_filter_singleton.AddToWhitelist(model_id)
                 save_loot_config()
 
-        # Single-item Whitelist/Blacklist”
+        # —— Single-item Whitelist/Blacklist ——
         PyImGui.separator()
         PyImGui.text("Single items - By ModelID")
         PyImGui.separator()
@@ -624,7 +750,18 @@ def DrawWindow():
     # 5) End the window (must be called even if collapsed)
     PyImGui.end()
 
-    # Window geometry delegated to ImGui native persistence
+    # 6) Once per second, persist any position or collapse changes
+    if save_window_timer.HasElapsed(1000):
+        # Position changed?
+        if (end_pos[0], end_pos[1]) != (win_x, win_y):
+            win_x, win_y = int(end_pos[0]), int(end_pos[1])
+            ini_window.write_key("Loot Manager", "x", str(win_x))
+            ini_window.write_key("Loot Manager", "y", str(win_y))
+        # Collapsed state changed?
+        if new_collapsed != win_collapsed:
+            win_collapsed = new_collapsed
+            ini_window.write_key("Loot Manager", "collapsed", str(win_collapsed))
+        save_window_timer.Reset()
 
 def DrawWhitelistViewer():
     if show_white_list:
@@ -721,7 +858,7 @@ def DrawFilteredLootList():
     # sort by distance, then render with our unified formatter
     display_list.sort(key=lambda x: x[1])
     for mid, dist in display_list:
-        PyImGui.text(f"{_format_model_id(mid)} ” {dist:.1f} units")
+        PyImGui.text(f"{_format_model_id(mid)} — {dist:.1f} units")
 
     PyImGui.end()
 
@@ -824,6 +961,28 @@ def tooltip():
     
 
 def render():
+    global last_config_check_time, last_config_timestamp, last_rarity_timestamp
+
+    current_time = time.time()
+    if current_time - last_config_check_time > 2.0:
+        last_config_check_time = current_time
+
+        # Check loot_config.json
+        if os.path.exists(CONFIG_FILE):
+            new_timestamp = os.path.getmtime(CONFIG_FILE)
+            if new_timestamp != last_config_timestamp:
+                PySystem.Console.Log("LootManager", "Detected loot_config.json change, reloading...")
+                load_loot_config()
+                last_config_timestamp = new_timestamp
+
+        # Check rarity_filter_data.json
+        if os.path.exists(RARITY_FILTER_DATA_FILE):
+            new_rarity_timestamp = os.path.getmtime(RARITY_FILTER_DATA_FILE)
+            if new_rarity_timestamp != last_rarity_timestamp:
+                PySystem.Console.Log("LootManager", "Detected rarity_filter_data.json change, reloading...")
+                load_rarity_filter_settings()
+                last_rarity_timestamp = new_rarity_timestamp
+
     # Draw GUI
     DrawWindow()
 

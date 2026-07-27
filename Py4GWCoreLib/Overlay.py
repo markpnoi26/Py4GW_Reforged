@@ -38,9 +38,13 @@ class Overlay:
         return screen_pos.x, screen_pos.y
 
     @staticmethod
-    def FindZ (x, y, z=0):
-        """Find The altitude of the ground at the given x,y coordinates based on Pathing Maps"""
-        return Overlay().overlay_instance.FindZ(x, y, z)
+    def FindZ (x, y, z=0, multi_plane=True):
+        """Find The altitude of the ground at the given x,y coordinates based on Pathing Maps
+
+        multi_plane=False resolves at the player's plane instead of searching every plane.
+        Pass it when the point's plane is already known to be the player's.
+        """
+        return Overlay().overlay_instance.FindZ(x, y, z, multi_plane)
 
     def RefreshDrawList(self):
         self.overlay_instance.RefreshDrawList()
@@ -123,8 +127,11 @@ class Overlay:
         self.overlay_instance.DrawPoly(center, radius, color, numsegments, thickness)
 
     def DrawPoly3D(self, center_x, center_y, center_z, radius, color=0xFFFFFFFF,numsegments =32, thickness=1.0, autoz = True ):
+        """autoz=True resolves the ground height at EVERY segment vertex, so the ring follows
+        the terrain - that is one FindZ per segment. Pass autoz=False for a flat ring at
+        center_z, which is what small markers want."""
         center = PyOverlay.Vec3f(center_x, center_y, center_z)
-        self.overlay_instance.DrawPoly3D(center, radius, color, numsegments, thickness)
+        self.overlay_instance.DrawPoly3D(center, radius, color, numsegments, thickness, autoz)
         
     def DrawPolyFilled(self, center_x, center_y, radius, color=0xFFFFFFFF, numsegments =32):
         center = PyOverlay.Vec2f(Utils.SafeInt(center_x), Utils.SafeInt(center_y))
@@ -147,9 +154,12 @@ class Overlay:
         # 4. Call the existing C++ bound method
         self.overlay_instance.DrawPolyFilled(center, radius, color, numsegments)
         
-    def DrawPolyFilled3D(self, center_x, center_y, center_z, radius, color=0xFFFFFFFF,numsegments =32):
+    def DrawPolyFilled3D(self, center_x, center_y, center_z, radius, color=0xFFFFFFFF,numsegments =32, autoz = True):
+        """autoz=True resolves the ground height at EVERY segment vertex, so the disc follows
+        the terrain - that is one FindZ per segment. Pass autoz=False for a flat disc at
+        center_z, which is what small markers want."""
         center = PyOverlay.Vec3f(center_x, center_y, center_z)
-        self.overlay_instance.DrawPolyFilled3D(center, radius, color, numsegments)
+        self.overlay_instance.DrawPolyFilled3D(center, radius, color, numsegments, autoz)
         
     def DrawCubeOutline(self, x, y, z, size, color=0xFFFFFFFF):
         center = PyOverlay.Vec3f(x, y, z)
