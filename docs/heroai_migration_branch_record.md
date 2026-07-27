@@ -72,17 +72,40 @@ Fully self-contained: touches only `Inventory.py`, `routines_src/Sequential.py`,
 `routines_src/yield_src/{items,merchant}.py`, `routines_src/behaviourtrees_src/items.py`.
 No dependency on any other workstream here. This is why it went first.
 
-### 3. Script manager — 8 files, ~1.5k ins
+### 3. Script manager — 8 files, ~1.5k ins 📝 **DRAFT PR OPEN**
 
 Flattens runnable scripts out of `Widgets/` into `Scripts/` with declarative
 metadata. Adds `py4gwcorelib_src/script_manager/` (discovery registry + dependency-aware
 loader, with tests) and the `ScriptManagementSystem` widget. `Scripts/DervCOFFarmBT.py`
 is the first script under the new scheme.
 
+→ **[apoguita/Py4GW_Reforged#33](https://github.com/apoguita/Py4GW_Reforged/pull/33)**
+(branch `SCRIPT_MANAGER_SYSTEM`, **draft** — the widget and runner wiring are still WIP)
+
 - Migration inventory: `docs/SCRIPT_MIGRATION_LIST.md`
 
-Independent of workstream 1. Could land before or after it. **Blocker to check
-first** — see below.
+Independent of workstream 1. Two things stay behind on this branch and are
+deliberately **not** in #33:
+
+- `Scripts/DervCOFFarmBT.py` — imports `Bots.marks_coding_corner.utils.*`, the
+  branch-modified `DervBoneFarmer`, and the BT item nodes from #32. It cannot stand
+  on `upstream/main`, so `Scripts/` lands empty in the PR. `ScriptRegistry.scan_mtimes`
+  handles a missing root, so the widget renders an empty list rather than erroring.
+- `test_discovery.py` / `test_loader.py` — 35 cases, held here while the API moves.
+  The repo has no test runner configured, so landing them is a maintainer call.
+
+Active development stays on this branch; `SCRIPT_MANAGER_SYSTEM` is re-cut from it
+and force-pushed rather than built up incrementally.
+
+Run the suite with `-t` pointed at the module's own folder, or unittest discovery
+walks up into `Py4GWCoreLib/__init__.py` and pulls in `PySystem`, which only exists
+in-process:
+
+```
+.venv/Scripts/python.exe -m unittest discover \
+    -s Py4GWCoreLib/py4gwcorelib_src/script_manager \
+    -t Py4GWCoreLib/py4gwcorelib_src/script_manager
+```
 
 ### 4. Botting step logger — 3 files, ~240 ins
 
@@ -124,13 +147,13 @@ own at any time and is probably the cheapest remaining win after #2.
 
 ```
   #32  salvage / identify / merchant     ✅ open       independent
-   2   EnemyTracker data                 ready        independent, pure data
-   3   script_manager                    after audit  independent of BT work
+  #33  script_manager                    📝 draft      independent of BT work
+   3   EnemyTracker data                 ready        independent, pure data
    4   HeroAI BT engine (12 PRs)         see plan     the long haul
    5   step_logger                       blocked      persistence-jail decision
 ```
 
-2 and 3 do not depend on 4 and should not wait on it. 5 needs a maintainer answer
+3 does not depend on 4 and should not wait on it. 5 needs a maintainer answer
 before any code is written.
 
 ## Keeping the branch alive

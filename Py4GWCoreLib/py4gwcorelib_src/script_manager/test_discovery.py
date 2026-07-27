@@ -171,12 +171,14 @@ class RegistryTests(unittest.TestCase):
 
 
 class RealScriptsTests(unittest.TestCase):
-    """Runs against the repo's actual Scripts/ folder when present."""
+    """Runs against the repo's actual Scripts/ folder when it holds scripts."""
 
     def setUp(self):
         self.root = os.path.abspath(os.path.join(HERE, "..", "..", "..", "Scripts"))
-        if not os.path.isdir(self.root):
-            self.skipTest("Scripts/ not present")
+        # Migration moves scripts in one at a time, so an existing-but-empty
+        # Scripts/ is a normal state, not a failure.
+        if not discovery.ScriptRegistry(self.root).scan_mtimes():
+            self.skipTest("no scripts in Scripts/")
 
     def test_every_script_parses(self):
         registry = discovery.ScriptRegistry(self.root)
