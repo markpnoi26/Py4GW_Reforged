@@ -6,6 +6,16 @@ are provably no-ops go first, the decider goes last.
 
 Reference: `docs/heroai_bt_migration_complete.md` (full record and rationale).
 
+## Naming
+
+Branch `HEROAI_BT_NN_SHORT_NAME`, title `[BT n/12] <short imperative>`. The
+count goes in both so a reviewer can see the position in the series without
+opening anything.
+
+| PR | Branch | Upstream |
+|---|---|---|
+| 1 | `HEROAI_BT_01_COMBAT_SERVICES` | [#34](https://github.com/apoguita/Py4GW_Reforged/pull/34) — open |
+
 ---
 
 ## The invariant that drives the ordering

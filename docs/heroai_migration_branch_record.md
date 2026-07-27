@@ -148,10 +148,14 @@ own at any time and is probably the cheapest remaining win after #2.
 ```
   #32  salvage / identify / merchant     ✅ open       independent
   #33  script_manager                    📝 draft      independent of BT work
+  #34  BT 1/12 — CombatServices          ✅ open       first slice of the long haul
    3   EnemyTracker data                 ready        independent, pure data
-   4   HeroAI BT engine (12 PRs)         see plan     the long haul
+   4   HeroAI BT engine (11 PRs left)    see plan     the long haul
    5   step_logger                       blocked      persistence-jail decision
 ```
+
+BT slices are named `HEROAI_BT_NN_SHORT_NAME` / `[BT n/12] ...`; the running
+table lives in `docs/heroai_bt_pr_plan.md`.
 
 3 does not depend on 4 and should not wait on it. 5 needs a maintainer answer
 before any code is written.
