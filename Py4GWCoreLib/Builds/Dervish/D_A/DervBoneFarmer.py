@@ -16,6 +16,7 @@ from Py4GWCoreLib import Weapon
 from Py4GWCoreLib.Builds.Any.HeroAI import HeroAI_Build
 from Py4GWCoreLib.py4gwcorelib_src.BehaviorTree import BehaviorTree
 from Py4GWCoreLib.routines_src.BehaviourTrees import BT
+from Py4GWCoreLib.routines_src.behaviourtrees_src import cast_events
 
 # Name substring matches — case-insensitive. Handy for readability but requires
 # the name string-table lookup to have resolved; unnamed enemies won't match.
@@ -51,6 +52,10 @@ NON_COMBAT_PHASES = {
     DervBuildFarmStatus.Loot,
     DervBuildFarmStatus.Wait,
 }
+
+# Escape hatch for the chain's per-leg buff wait. Long enough to cover a 1s cast
+# plus round trip; on expiry the chain continues rather than aborting.
+ENCHANT_CONFIRM_TIMEOUT_MS = 2500
 
 
 def sequence(name: str, *children) -> BehaviorTree:
@@ -169,15 +174,45 @@ class DervBoneFarmer(BTBuildMgr):
         arr = Routines.Agents.GetFilteredEnemyArray(px, py, Range.Spellcast.value)
         return [aid for aid in arr if not is_blacklisted_enemy(aid)], px, py
 
-    def cast_gated(self, name: str, skill_id: int, gate_fn, aftercast_ms: int) -> BehaviorTree:
-        return sequence(
+    def cast_body(self, name: str, skill_id: int, aftercast_ms: int, verified: bool = True) -> BehaviorTree:
+        """Event-driven cast when the agent-event stream is delivering, otherwise
+        the fixed-aftercast path this build has always used.
+
+        The two branches are mutually exclusive on purpose. A plain Selector
+        would re-cast through the legacy branch whenever the event branch
+        reported an interrupt.
+
+        `verified=False` for attack skills: ATTACK_SKILL_FINISHED only arrives
+        when the swing lands (1.5s on a scythe), and holding RUNNING that long
+        pins the Engagement sequence — which retargets upstream of the attack.
+        Their adrenaline gate already latches against a re-fire.
+        """
+        if not verified:
+            return BT.Skills.CastSkillID(skill_id, aftercast_delay=aftercast_ms, log=False)
+
+        return selector(
             f"Cast:{name}",
+            sequence(
+                f"Verified:{name}",
+                condition("CastEventsLive", cast_events.tracker_is_live),
+                BT.CastEvents.CastAndResolve(skill_id, name=name),
+            ),
+            sequence(
+                f"Timed:{name}",
+                condition("CastEventsDark", lambda: not cast_events.tracker_is_live()),
+                BT.Skills.CastSkillID(skill_id, aftercast_delay=aftercast_ms, log=False),
+            ),
+        )
+
+    def cast_gated(self, name: str, skill_id: int, gate_fn, aftercast_ms: int, verified: bool = True) -> BehaviorTree:
+        return sequence(
+            f"Gated:{name}",
             condition(f"Gate:{name}", gate_fn),
-            BT.Skills.CastSkillID(skill_id, aftercast_delay=aftercast_ms, log=False),
+            self.cast_body(name, skill_id, aftercast_ms, verified=verified),
         )
 
     def cast_plain(self, name: str, skill_id: int, aftercast_ms: int) -> BehaviorTree:
-        return BT.Skills.CastSkillID(skill_id, aftercast_delay=aftercast_ms, log=False)
+        return self.cast_body(name, skill_id, aftercast_ms)
 
     def swap_to_scythe(self) -> BehaviorTree:
         def needs_scythe() -> bool:
@@ -242,30 +277,62 @@ class DervBoneFarmer(BTBuildMgr):
                 self.cast_gated(
                     "VowOfSilence",
                     self.vow_of_silence,
-                    lambda: (
-                        self.has_buff(self.grenths_aura)
-                        and self.has_buff(self.vow_of_piety)
-                    ),
+                    lambda: (self.has_buff(self.grenths_aura) and self.has_buff(self.vow_of_piety)),
                     aftercast_ms=100,
                 ),
             ),
         )
 
+    def wait_for_buff(self, name: str, skill_id: int) -> BehaviorTree.ConditionNode:
+        """Hold until the enchantment is actually up.
+
+        A ConditionNode, not an ActionNode — ActionNode delivers its result a tick
+        late. SUCCESS on expiry, never FAILURE: this chain has to finish, so a buff
+        we could not read must not abort the legs after it.
+        """
+        started = {"at": 0.0}
+
+        def check() -> BehaviorTree.NodeState:
+            if started["at"] == 0.0:
+                started["at"] = time.monotonic()
+            if self.has_buff(skill_id):
+                started["at"] = 0.0
+                return BehaviorTree.NodeState.SUCCESS
+            if (time.monotonic() - started["at"]) * 1000 >= ENCHANT_CONFIRM_TIMEOUT_MS:
+                started["at"] = 0.0
+                return BehaviorTree.NodeState.SUCCESS
+            return BehaviorTree.NodeState.RUNNING
+
+        return condition(f"Landed:{name}", check)
+
+    def chain_leg(self, name: str, skill_id: int) -> BehaviorTree:
+        """Cast, then wait for the buff before the next leg is even queued.
+
+        aftercast_delay=0 because the wait is the spacing now. Queuing the legs
+        100ms apart is what let Vow of Silence's UseSkill land while Grenth's Aura
+        was still in its 1s cast, clipping it.
+        """
+        return sequence(
+            f"Chain:{name}",
+            self.cast_body(name, skill_id, aftercast_ms=0, verified=False),
+            self.wait_for_buff(name, skill_id),
+        )
+
     def refresh_chain(self) -> BehaviorTree:
         """PF → GA → VoS. PF strips VoS as its cost, so only commit when GA and VoS
         are both off cooldown — otherwise the chain would strip VoS and stall."""
+
         def ga_and_vos_ready() -> bool:
-            return (
-                Routines.Checks.Skills.IsSkillIDReady(self.grenths_aura)
-                and Routines.Checks.Skills.IsSkillIDReady(self.vow_of_silence)
+            return Routines.Checks.Skills.IsSkillIDReady(self.grenths_aura) and Routines.Checks.Skills.IsSkillIDReady(
+                self.vow_of_silence
             )
 
         return sequence(
             "RefreshChain",
-            condition("GAandVoSReady", ga_and_vos_ready),
-            self.cast_plain("PiousFury", self.pious_fury, aftercast_ms=100),
-            self.cast_plain("GrenthsAura", self.grenths_aura, aftercast_ms=100),
-            self.cast_plain("VowOfSilence", self.vow_of_silence, aftercast_ms=100),
+            condition("NotCastingAndGA_VoSReady", lambda: not Routines.Checks.Skills.InCastingProcess() and ga_and_vos_ready()),
+            self.chain_leg("PiousFury", self.pious_fury),
+            self.chain_leg("GrenthsAura", self.grenths_aura),
+            self.chain_leg("VowOfSilence", self.vow_of_silence),
         )
 
     def engagement(self) -> BehaviorTree:
@@ -279,16 +346,17 @@ class DervBoneFarmer(BTBuildMgr):
                 return BehaviorTree.NodeState.FAILURE
             nearest = min(
                 enemies,
-                key=lambda aid: (
-                    (Agent.GetXY(aid)[0] - px) ** 2
-                    + (Agent.GetXY(aid)[1] - py) ** 2
-                ),
+                key=lambda aid: ((Agent.GetXY(aid)[0] - px) ** 2 + (Agent.GetXY(aid)[1] - py) ** 2),
             )
             Player.Interact(nearest, False)
             return BehaviorTree.NodeState.SUCCESS
 
         return sequence(
             "Engagement",
+            # Skills outrank attacking. Without this the Selector drops here the tick
+            # after RefreshChain queues its last cast, and the attack clips the
+            # enchantment that is still activating.
+            condition("NotCasting", lambda: not Routines.Checks.Skills.InCastingProcess()),
             condition("EnemyPresent", enemy_present),
             optional(self.swap_to_scythe(), name="OptionalScytheSwap"),
             action("InteractNearest", interact_nearest, aftercast_ms=100),
@@ -299,12 +367,14 @@ class DervBoneFarmer(BTBuildMgr):
                     self.crippling_victory,
                     lambda: self.has_enough_adrenaline(self.crippling_victory),
                     aftercast_ms=200,
+                    verified=False,
                 ),
                 self.cast_gated(
                     "ReapImpurities",
                     self.reap_impurities,
                     lambda: self.has_enough_adrenaline(self.reap_impurities),
                     aftercast_ms=200,
+                    verified=False,
                 ),
                 succeeder("AutoAttackFallthrough"),
             ),
@@ -319,10 +389,7 @@ class DervBoneFarmer(BTBuildMgr):
                 self.cast_gated(
                     "SignetOfMysticSpeed",
                     self.signet_of_mystic_speed,
-                    lambda: (
-                        self.has_buff(self.vow_of_silence)
-                        and not self.has_buff(self.signet_of_mystic_speed)
-                    ),
+                    lambda: (self.has_buff(self.vow_of_silence) and not self.has_buff(self.signet_of_mystic_speed)),
                     aftercast_ms=250,
                 ),
                 self.cast_plain("IAmUnstoppable", self.i_am_unstoppable, aftercast_ms=100),
