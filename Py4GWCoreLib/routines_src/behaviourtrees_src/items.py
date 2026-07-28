@@ -58,7 +58,7 @@ from ...enums import CONSUMABLE_MODELID_TO_EFFECT_NAME
 from ...enums_src.Item_enums import Bags
 from ...enums_src.Model_enums import ModelID
 from ...enums_src.UI_enums import ControlAction
-from ...py4gwcorelib_src.Lootconfig_src import LootConfig
+from ...py4gwcorelib_src.loot_filters import LootFilters
 from ...py4gwcorelib_src.BehaviorTree import BehaviorTree
 from .composite import BTComposite
 from .player import BTPlayer
@@ -943,7 +943,7 @@ class BTItems:
           Notes: Returns success immediately after mutating the local loot configuration.
         """
         def _add_model_to_loot_whitelist() -> BehaviorTree.NodeState:
-            LootConfig().AddToWhitelist(model_id)
+            LootFilters().add_model(model_id)
             return BehaviorTree.NodeState.SUCCESS
 
         return BehaviorTree(
@@ -981,11 +981,7 @@ class BTItems:
                 state["started_at"] = 0.0
                 return BehaviorTree.NodeState.SUCCESS
 
-            loot_array = LootConfig().GetfilteredLootArray(
-                distance=distance,
-                multibox_loot=True,
-                allow_unasigned_loot=False,
-            )
+            loot_array = LootFilters().GetLootArray(distance)
             if not loot_array:
                 state["started_at"] = 0.0
                 if state["claimed_item_agent_id"]:
@@ -1022,11 +1018,7 @@ class BTItems:
                 clear_loot_lock(state["claimed_item_agent_id"])
                 state["claimed_item_agent_id"] = 0
             elif Agent.IsValid(item_agent_id):
-                live_loot = LootConfig().GetfilteredLootArray(
-                    distance=distance,
-                    multibox_loot=True,
-                    allow_unasigned_loot=False,
-                )
+                live_loot = LootFilters().GetLootArray(distance)
                 if item_agent_id not in live_loot and state["claimed_item_agent_id"]:
                     clear_loot_lock(state["claimed_item_agent_id"])
                     state["claimed_item_agent_id"] = 0

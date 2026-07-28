@@ -134,6 +134,16 @@ CATALOG: "tuple[Category, ...]" = (
         listeners=(),
     ),
     Category(
+        key="loot", title="Loot", icon="ICON_BOX_OPEN",
+        # Custom category: no listeners. Holds the loot system's subcategories, each rendering its own
+        # tabbed section: the Loot Filter Factory and Beacons (authoring surfaces, standing on their
+        # own) beside Loot Filters and Recolor & Beacons (the features that consume them).
+        #
+        # NOT folded into `items` -- that key is already "Items & Merchants" and carries native
+        # listeners; reusing it would have skipped them.
+        listeners=(),
+    ),
+    Category(
         key="chat_commands", title="Chat Commands", icon="ICON_TERMINAL",
         # Custom category: no listeners. Rendered as a read-only monitor of the ChatCommands
         # registry (registered commands, aliases, callees, invocation counts).

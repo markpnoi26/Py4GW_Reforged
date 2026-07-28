@@ -335,7 +335,7 @@ class Sequential:
         def InteractWithNearestChest():
             """Target and interact with chest and items."""
             from ..Py4GWcorelib import ActionQueueManager
-            from ..Py4GWcorelib import LootConfig
+            from ..py4gwcorelib_src.loot_filters import LootFilters
             from ..Py4GWcorelib import Utils
             from ..GlobalCache import GLOBAL_CACHE
             from ..enums_src.GameData_enums import Range
@@ -354,7 +354,7 @@ class Sequential:
             sleep(1)
 
             Sequential.Agents.TargetNearestItem(distance=300)
-            filtered_loot = LootConfig().GetfilteredLootArray(Range.Area.value, multibox_loot= True)
+            filtered_loot = LootFilters().GetLootArray(Range.Area.value)
             item = Utils.GetFirstFromArray(filtered_loot)
             Sequential.Agents.ChangeTarget(item)
             Sequential.Player.InteractTarget()
