@@ -92,6 +92,9 @@ CATALOG: "tuple[Category, ...]" = (
                      help="Return the party to the outpost on a wipe (only when you are the party leader)."),
             Listener(name="keep_current_quest", label="Keep current quest",
                      help="Keep your manually-chosen quest active when the game auto-adds a new one."),
+            Listener(name="skip_campaign_prompt", label="Skip another-campaign prompt",
+                     help="Auto-confirm the prompt shown when entering a mission with a character "
+                          "from another campaign."),
         ),
     ),
     Category(
