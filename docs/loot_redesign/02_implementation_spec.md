@@ -52,6 +52,41 @@ Nine decisions. **Zero** were surfaced before they shipped.
 
 ---
 
+## The absolute rule: a script NEVER persists
+
+> **Whatever a script does lives in memory. It never reaches disk. Never.**
+
+Not "is discouraged from", not "is cleaned up later" — there is no path from a script's change to a
+writer. This is the invariant the whole design rests on, and everything else about live state is a
+mechanical consequence of it:
+
+**Every piece a script can touch is doubled: a persisted copy and a live copy.** The persisted copy is
+the user's, written only by the user through System Settings. The live copy is what actually runs.
+A script writes only the live copy.
+
+| piece | can a script change it? | doubled? |
+|---|---|---|
+| Loot Filters — active profile, toggles, hand lists, blacklist | yes | **yes** |
+| Recolor & Beacons — active profile, outcomes, budget | yes | **yes** |
+| Loot Filter Factory — filters, profiles | **no** (structure is forbidden — see H2) | no |
+| Beacons — presets | **no** | no |
+
+Only the two feature configurations need a live copy, because they are the only things a script can
+reach. The Factory and the Beacons module hold definitions a script may consume but never author, so
+there is nothing there for a script to dirty.
+
+**Consequences, all derived rather than decided:**
+
+- **Reset discards the live copy and re-copies from persisted.** Per feature, since each has its own.
+- **A restart is a reset** — the live copy never existed on disk, so it comes back as stock by
+  construction, not by cleanup.
+- **Saving is never something a script triggers.** There is no "save" on the live copy; it is not a
+  thing that can be written.
+- **The diff is live vs persisted**, per feature. It is what the label and the detail window show.
+- **A crash loses nothing**, because there was nothing of the user's to lose.
+
+The user's configuration is therefore intact at all times, by construction and not by discipline.
+
 ## Terminology — say what you mean
 
 **A "filter" is the composite resolver**, not a single evaluation.
@@ -105,8 +140,7 @@ as in the reference. The user sees the rule and the picker at the same time.
 
 
 
-- **A1 — Model id input.** Picker from the 387-row catalog / free-typed integers / both?
-#### A2 — Item type input · **SETTLED (presentation still open)**
+#### A2 — Item type input · **SETTLED**
 
 Same shape as A1: **inline two-pane picker**, rows read `Name (id)`, names prettified.
 
@@ -127,8 +161,20 @@ one filter be written two ways — `MartialWeapon` versus Axe+Sword+… — whic
 is not used here. The enum's self-contradiction is **not** fixed as part of this work — see
 `docs/pending_fixes.md` PF-1.
 
-Non-weapon groups proposed, awaiting approval: Armor, Upgrades, Miniatures, Consumables,
-Currency & tokens, Materials & salvage, Keys & quest, Cosmetic, Containers, Event.
+**Non-weapon groups · APPROVED:**
+
+| group | types |
+|---|---|
+| **Armor** | Chestpiece, Headpiece, Leggings, Boots, Gloves |
+| **Upgrades** | Rune_Mod |
+| **Miniatures** | Minipet |
+| **Consumables** | Usable, Kit, Scroll |
+| **Currency & tokens** | Gold_Coin, CC_Shards, Materials_Zcoins |
+| **Materials & salvage** | Salvage, Trophy |
+| **Keys & quest** | Key, Quest_Item, Storybook |
+| **Cosmetic** | Dye, Costume, Costume_Headpiece |
+| **Containers** | Bag, Bundle |
+| **Event** | Present |
 
 ---
 
@@ -344,6 +390,30 @@ to be **written** as a new ImGui addon in the Native tree. That is a generic too
 work. If the quick access ever outgrows one row of tabs, the settled house rule already answers it —
 collapsible headers, stacked.
 
+#### F1 — bulk actions · **SETTLED**
+
+**`all` / `clear` at every level where it applies** — group, category, and anywhere else a bulk toggle
+is meaningful. Not only at the lowest level.
+
+*(Written in the settled vocabulary: a **category** contains **groups**. See F · Naming.)*
+
+#### F2 — one shared renderer, and its own callback · **SETTLED**
+
+**Two separate things, both settled:**
+
+**What draws a hand list: ONE shared renderer.** The settings surface and the quick access render the
+same groups, with the same four layouts, the same collapsible headers and the same bulk actions — so
+they call the same function. A fix or a new layout lands in both at once and they cannot drift apart.
+
+**What drives the drawing: the quick access owns its own callback.** It registers its own draw pass
+(`PyCallback.Register(name, Phase.Update, fn, context=Context.Draw)`, as `agent_recolor` already does
+for its data pass) rather than being drawn from another module's `draw()`. The window is therefore
+independent — it renders whether or not System Settings is open, and does not ride on the settings
+widget's frame.
+
+*(The reverted build got this wrong in the most basic way: the quick access had no caller at all, so
+it never appeared. Owning a callback removes the class of bug entirely.)*
+
 #### Naming · **SETTLED**
 
 | piece | name | what it is |
@@ -414,15 +484,8 @@ settled). Recolor & Beacons has profiles by the same mechanism, not a separate o
 
 *(supersedes the plan's broader "a script may change anything in live")*
 
-Scripts get **consumption** and **selection**, never authorship:
-
-| a script may | a script may not |
-|---|---|
-| consume — ask what is wanted | **create** a filter or profile |
-| change the active profile | **delete** a filter or profile |
-| set which filters are active | — |
-
-Authoring belongs to the user, in System Settings.
+**"Consumers only" is about FILTERS and PROFILES — not about entries.** A script may still add a model
+id or an item id; that was settled in the plan and is not narrowed here. See H2.
 
 ### C · Beacon presets
 
@@ -634,10 +697,31 @@ So:
 two-level system with 23 headers over one group. Removing it from the data means the hierarchy exists
 only where it means something, and the trophies index costs nothing to change later.
 
-#### Naming
+#### Naming · **SETTLED**
 
-Whether the two levels get renamed (the proposal was *category* containing *group*, mirroring
-*profile* containing *filter*) is **not settled** — raised, and left open.
+**A category contains groups.** The two levels are renamed so the taxonomy reads the same way
+everywhere:
+
+| level | was | **is now** | count | examples |
+|---|---|---|---|---|
+| top | `group` | **category** | 11 | Trophies, Materials, Keys, Tomes, Alcohol, … |
+| second | `subgroup` | **group** | 29 | Materials -> Common / Rare · Keys -> Core / Prophecies / Factions / Nightfall |
+
+This makes the two containers parallel, which is the point:
+
+| container | contains |
+|---|---|
+| **profile** | filters |
+| **category** | groups |
+
+**The catalog's field names change with it** — `group` -> `category`, `subgroup` -> `group`. Since the
+catalog is package data authored by us, that is a rename in the source, not a migration of user data.
+
+*Reminder of what this interacts with:* Trophies has **no groups** — its alphabetical A…W split was
+dropped from the data and is done at render time. So the second level exists for 10 of the 11
+categories and carries only meaningful distinctions.
+
+**Chunk F is closed.**
 
 ### G · Marking · **SETTLED**
 
@@ -682,14 +766,58 @@ Two questions were asked here from a wrong premise and are withdrawn:
 
 ### H · Feature level
 
-- **H1 — Loot enable/disable.** Does the loot feature have a master switch, and where?
-- **H2 — Script API surface.** The plan allows a script to change any switch and use any profile. Which
-  of these are exposed as bot steps: `set_rarity`, `use_profile`, `add_filter`?
+#### H1 — master switch · **SETTLED**
+
+**Yes. The Loot Filters feature has a master on/off switch, in its own Loot Filters section.**
+
+Symmetric with Recolor & Beacons, which already has one. Each feature is standalone, so each owns its
+own switch — neither can be turned off from the other's section, and neither depends on the other
+being on.
+
+*(In the reverted build `Loot.enabled` existed in the class and nothing exposed it, so the feature
+could not be turned off at all.)*
+#### H2 — the script surface · **SETTLED**
+
+**The line is between *entries* and *structure*.**
+
+| a script MAY | a script MAY NOT |
+|---|---|
+| **add a model id** | **create a profile** |
+| **add an item id** | **create a set of filters** |
+| toggle anything off (or on) | author, rename or delete a filter |
+| change the active profile | persist anything |
+| report a failed pickup | — |
+
+**Adding a model or an item is imperative and stays.** A script has to handle special cases — a bot
+farming one drop needs that drop wanted — and the plan already settled this: *a script may hand the
+class **data** — a model id, an item id — values, never something that decides.*
+
+**What is forbidden is structure**: creating profiles, creating sets of filters, and thereby using the
+library as a bypass — disable everything the user configured, install your own ruling, and run it
+through the class as a proxy.
+
+**On the residual risk, stated plainly:** injecting model ids *can* be abused into a bypass — a script
+could add a hundred models and approximate its own filter. **We accept that; there is not much to be
+done about it** without removing the capability that makes scripts useful. The guard is against
+*structural* substitution, not against every conceivable misuse.
+
+Everything a script does remains **live-only** and is discarded by a reset or a restart.
 
 ### I · Presentation
 
-- **I1 — Secondary text.** Mid gray via `text_colored`, never `text_disabled`. *(settled)*
-- **I2 — Anything else** that should be a house rule rather than decided per-widget?
+The house rules, all settled in place as they came up:
+
+- **secondary text** — mid gray via `text_colored`, never `text_disabled` (too dim to read)
+- **collapsible headers** — the universal container; the structure is uniform, the cell varies
+- **`###` ids** wherever a visible label carries a count or state, or the widget loses its state
+- **four renderings**, chosen by the user per surface, with uniform-apply buttons in settings
+- **bulk `all` / `clear`** at every level where it applies
+- **authoring surfaces stand alone**; a feature consumes what they produce
+
+No further rules are being invented up front. Anything else is decided when a surface actually needs
+it, and recorded here at that point.
+
+**Chunk I is closed.**
 
 ---
 

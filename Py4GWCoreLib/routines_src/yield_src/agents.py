@@ -146,7 +146,8 @@ class Agents:
     @staticmethod
     def InteractWithNearestChest(max_distance: int = 2500, before_interact_fn=lambda: None, after_interact_fn=lambda: None):
         """Target and interact with chest and items."""
-        from ...Py4GWcorelib import LootConfig, Utils
+        from ...Py4GWcorelib import Utils
+        from ...py4gwcorelib_src.loot_filters import LootFilters
         from ...enums_src.GameData_enums import Range
         from ..Agents import Agents as BaseAgents
 
@@ -164,7 +165,7 @@ class Agents:
         yield from wait(500)
 
         yield from Agents.TargetNearestItem(distance=300)
-        filtered_loot = LootConfig().GetfilteredLootArray(Range.Area.value, multibox_loot=True)
+        filtered_loot = LootFilters().GetLootArray(Range.Area.value)
         item = Utils.GetFirstFromArray(filtered_loot)
         yield from Agents.ChangeTarget(item)
         yield from YieldPlayer.InteractTarget()

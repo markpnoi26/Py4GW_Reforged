@@ -29,6 +29,7 @@ class Listeners:
     AUTO_OPEN_LOCKED_CHEST = "auto_open_locked_chest"
     FACTION_DONATE_SKIP_NAME = "faction_donate_skip_name"
     KEEP_CURRENT_QUEST = "keep_current_quest"
+    SKIP_CAMPAIGN_PROMPT = "skip_campaign_prompt"
 
     @staticmethod
     def GetNames():
@@ -458,3 +459,30 @@ class Listeners:
         def IsEnabled():
             """Purpose: Whether keep-current-quest is enabled. Returns: bool."""
             return PyListeners.is_enabled(Listeners.KeepCurrentQuest.NAME)
+
+    class SkipCampaignPrompt:
+        """
+        Auto-confirm the prompt shown when entering a mission with a character
+        from another campaign. Opt-in; no extra config.
+        """
+        NAME = "skip_campaign_prompt"
+
+        @staticmethod
+        def Enable():
+            """Purpose: Enable skip-campaign-prompt. Returns: bool."""
+            return PyListeners.enable(Listeners.SkipCampaignPrompt.NAME)
+
+        @staticmethod
+        def Disable():
+            """Purpose: Disable skip-campaign-prompt. Returns: bool."""
+            return PyListeners.disable(Listeners.SkipCampaignPrompt.NAME)
+
+        @staticmethod
+        def Toggle():
+            """Purpose: Toggle skip-campaign-prompt. Returns: bool."""
+            return PyListeners.toggle(Listeners.SkipCampaignPrompt.NAME)
+
+        @staticmethod
+        def IsEnabled():
+            """Purpose: Whether skip-campaign-prompt is enabled. Returns: bool."""
+            return PyListeners.is_enabled(Listeners.SkipCampaignPrompt.NAME)

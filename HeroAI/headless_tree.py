@@ -3,9 +3,9 @@ from Py4GWCoreLib.GlobalCache import GLOBAL_CACHE
 from Py4GWCoreLib.Map import Map
 from Py4GWCoreLib.Player import Player
 from Py4GWCoreLib.Routines import Routines
-from Py4GWCoreLib.Builds.Any.HeroAI import HeroAI_Build
 from Py4GWCoreLib.routines_src.BehaviourTrees import BehaviorTree
-from Py4GWCoreLib import ActionQueueManager, LootConfig, Range, SharedCommandType, ThrottledTimer, Utils
+from Py4GWCoreLib import ActionQueueManager, Range, SharedCommandType, ThrottledTimer, Utils
+from Py4GWCoreLib.py4gwcorelib_src.loot_filters import LootFilters
 
 from .cache_data import CacheData
 from .follow.follower_runtime import (
@@ -27,9 +27,10 @@ class HeroAIHeadlessTree:
     without requiring the widget itself to be enabled.
     """
 
-    def __init__(self, cached_data: CacheData | None = None, heroai_build: HeroAI_Build | None = None):
+    def __init__(self, cached_data: CacheData | None = None, heroai_build=None):
+        from HeroAI.engine import create_heroai_engine
         self.cached_data = cached_data or CacheData()
-        self.heroai_build = heroai_build or HeroAI_Build(self.cached_data)
+        self.heroai_build = heroai_build or create_heroai_engine(self.cached_data)
         Settings().AutoCallTargets = True
         self._build_contract_map_signature: tuple[int, int, int, int] | None = None
         self._loot_throttle_check = ThrottledTimer(250)
@@ -114,11 +115,7 @@ class HeroAIHeadlessTree:
             self.cached_data.in_looting_routine = False
             return BehaviorTree.NodeState.FAILURE
 
-        loot_array = LootConfig().GetfilteredLootArray(
-            Range.Earshot.value,
-            multibox_loot=True,
-            allow_unasigned_loot=False,
-        )
+        loot_array = LootFilters().GetLootArray(Range.Earshot.value)
         if len(loot_array) == 0:
             self.cached_data.in_looting_routine = False
             return BehaviorTree.NodeState.FAILURE

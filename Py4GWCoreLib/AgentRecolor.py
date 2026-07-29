@@ -157,6 +157,71 @@ class AgentRecolor:
         except Exception:
             pass
 
+    # ── ground items ──────────────────────────────────────────────────────────────────────
+    @staticmethod
+    def EnableItems(on: bool = True) -> None:
+        ar = _ar()
+        if ar is None:
+            return
+        try:
+            ar.item_enable() if on else ar.item_disable()
+        except Exception:
+            pass
+
+    @staticmethod
+    def AreItemsEnabled() -> bool:
+        ar = _ar()
+        if ar is None:
+            return False
+        try:
+            return bool(ar.item_is_enabled())
+        except Exception:
+            return False
+
+    @staticmethod
+    def SetItemColors(rules: "List[Tuple[int, int]]") -> None:
+        """Replace the WHOLE per-item-agent store with ``rules`` (``(agent_id, argb)``).
+
+        Ids not present are dropped; the item_id / model / name / type / rarity stores are
+        separate and untouched. This is the marking feature's whole delivery surface: the
+        caller resolves every match itself and hands over one already-decided colour per agent.
+
+        The per-kind item setters (model / name / type / rarity) stay deliberately unexposed --
+        under this design the caller resolves matching, so a second matching path in the backend
+        would be a competing authority.
+        """
+        ar = _ar()
+        if ar is None:
+            return
+        try:
+            ar.set_item_agent_colors(rules)
+            return
+        except AttributeError:
+            pass
+        except Exception:
+            return
+        # The bulk binding is missing (a DLL built before it existed). Reproduce it exactly with
+        # the per-id calls -- set what is wanted, drop what is no longer there -- so behaviour is
+        # identical and only the call count differs.
+        try:
+            wanted = {int(agent_id): int(argb) for agent_id, argb in rules}
+            for agent_id in [i for i in ar.get_item_agent_rules() if i not in wanted]:
+                ar.remove_item_agent_color(agent_id)
+            for agent_id, argb in wanted.items():
+                ar.set_item_agent_color(agent_id, argb)
+        except Exception:
+            pass
+
+    @staticmethod
+    def ClearItemRules() -> None:
+        ar = _ar()
+        if ar is None:
+            return
+        try:
+            ar.item_clear_rules()
+        except Exception:
+            pass
+
     @staticmethod
     def RefreshNameTags() -> None:
         """Force every overhead name tag to re-render so a rule change applies without a hover."""

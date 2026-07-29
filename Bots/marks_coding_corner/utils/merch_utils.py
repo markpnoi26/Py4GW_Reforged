@@ -30,7 +30,7 @@ def buy_id_kits(custom_amount=1):
     kits_in_inv = GLOBAL_CACHE.Inventory.GetModelCount(ModelID.Identification_Kit)
     sup_kits_in_inv = GLOBAL_CACHE.Inventory.GetModelCount(ModelID.Superior_Identification_Kit)
     if (kits_in_inv + sup_kits_in_inv) < custom_amount:
-        kits_needed = (kits_in_inv + sup_kits_in_inv) - custom_amount
+        kits_needed = custom_amount - (kits_in_inv + sup_kits_in_inv)
         yield from Routines.Yield.Merchant.BuyIDKits(kits_needed)
 
 

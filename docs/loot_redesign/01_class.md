@@ -198,6 +198,12 @@ store of filter definitions**, usable by both.
 *What this means concretely:*
 - **A filter is criteria — nothing else.** It describes *what matches*. It does not carry what happens
   on a match.
+
+  > **Read with G, so this is not misread as a contradiction:** a "filter" is the **composite
+  > resolver**, authored in the Loot Filter Factory as criteria only. The **outcome** is what a
+  > feature's profile attaches to it. So *"each marking filter is a recolour or a beacon"* and *"a
+  > filter is criteria only"* describe the same object from opposite ends — the Factory's definition,
+  > and a profile's use of it.
 - **Each feature binds its own outcome** to the filters it uses: the loot feature's outcome is *wanted*;
   the marking feature's outcome is *recolour and/or beacon* (the two checkboxes). The same filter can
   therefore be used by both without either feature inheriting the other's behaviour.
@@ -230,8 +236,12 @@ questions, it adds entries to the list, and it reports failures.
 
 ### 2. It changes the LIVE state — and only the live state
 
-**The rule is not "a script may only add". A script may change anything; it may never persist
-anything.** *(confirmed — this supersedes the earlier additive-only framing)*
+**A script may never persist anything. Never — whatever it does is in memory and no change of its
+ever reaches disk.** That part is absolute and unchanged.
+
+> **Refined since:** *"a script may change anything"* is too broad. The line is between **entries** and
+> **structure**: a script **may** add a model id or an item id and toggle things, and **may not**
+> create profiles or sets of filters. See `02_implementation_spec.md` H2.
 
 A script may:
 
@@ -1387,9 +1397,9 @@ Manager shows.
 **every icon carries a hover tooltip** showing its data. The tooltip is not decoration — it is what
 makes the compact view usable at all.
 
-**The view toggle is reachable from both the quick access and the settings**, and **both show the
-warning** about the cost the icon grid carries. The user can see the warning and change the view from
-wherever they are, rather than it being buried in one place.
+> ~~**The view toggle is reachable from both the quick access and the settings.**~~ **SUPERSEDED** —
+> all configuration lives in **System Settings**; the quick access configures nothing and only follows
+> what was set. See `02_implementation_spec.md` P2.
 
 **Filters are presented differently** — they are named, ordered rules, not a dense grid of items, so
 neither of these two views applies to them.
@@ -1404,9 +1414,10 @@ with every option at once** — one surface is visible at a time.
 **Appealing, but not fancy.** These are **quick-access buttons**. The layout should look good and stay
 compact; it is not a showcase.
 
-**Structure chosen (round 1): top tabs.** A horizontal tab strip across the top, a control row beneath
-it (view toggle, counts), then the content. Side-rail tabs and a controls-in-the-tab-row variant were
-considered and not taken.
+> ~~**Structure chosen (round 1): top tabs.**~~ **SUPERSEDED** — see `02_implementation_spec.md`
+> "Navigation — collapsible headers, not tabs". Groups are **stacked collapsible headers**, not a tab
+> strip: a long row of tabs is worse than none, and ImGui has no multi-row tab bar. This also stops the
+> quick access being the one surface with its own navigation idiom.
 
 **One tab = one category. No nested tabs.** *(confirmed)* A tab holds a category and shows its items
 directly — no sub-tabs and no subgroup picker.
@@ -1436,8 +1447,8 @@ quick access.
 
 - **The layout detail.** The foundation is set (tabs, compact, not fancy); the arrangement within a tab
   is being worked out from structural sketches.
-- **Tooltip content.** The tooltip's *purpose* is settled (identifying an icon); exactly which fields
-  it shows is not.
+- ~~**Tooltip content.**~~ **Settled**: every icon carries a hover tooltip showing the item's data —
+  that is what makes the icon view usable at all, since an icon does not identify itself.
 - **The System Settings section breakdown** within each of the two subcategories.
 
 ---

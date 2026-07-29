@@ -335,7 +335,7 @@ class Sequential:
         def InteractWithNearestChest():
             """Target and interact with chest and items."""
             from ..Py4GWcorelib import ActionQueueManager
-            from ..Py4GWcorelib import LootConfig
+            from ..py4gwcorelib_src.loot_filters import LootFilters
             from ..Py4GWcorelib import Utils
             from ..GlobalCache import GLOBAL_CACHE
             from ..enums_src.GameData_enums import Range
@@ -354,7 +354,7 @@ class Sequential:
             sleep(1)
 
             Sequential.Agents.TargetNearestItem(distance=300)
-            filtered_loot = LootConfig().GetfilteredLootArray(Range.Area.value, multibox_loot= True)
+            filtered_loot = LootFilters().GetLootArray(Range.Area.value)
             item = Utils.GetFirstFromArray(filtered_loot)
             Sequential.Agents.ChangeTarget(item)
             Sequential.Player.InteractTarget()
@@ -402,7 +402,8 @@ class Sequential:
                 cost = quantity * value
                 GLOBAL_CACHE.Trading.Merchant.SellItem(item_id, cost)
                     
-            while not ActionQueueManager().IsEmpty("MERCHANT"):
+            # Merchant buy/sell land on the shared "ACTION" queue, not "MERCHANT".
+            while not ActionQueueManager().IsEmpty("ACTION"):
                 sleep(0.35)
             
             if log:
@@ -429,8 +430,8 @@ class Sequential:
                 item_id = merchant_item_list[0]
                 value = GLOBAL_CACHE.Item.Properties.GetValue(item_id) * 2 # value reported is sell value not buy value
                 GLOBAL_CACHE.Trading.Merchant.BuyItem(item_id, value)
-                
-            while not ActionQueueManager().IsEmpty("MERCHANT"):
+
+            while not ActionQueueManager().IsEmpty("ACTION"):
                 sleep(0.35)
                 
             if log:
@@ -457,8 +458,8 @@ class Sequential:
                 item_id = merchant_item_list[0]
                 value = GLOBAL_CACHE.Item.Properties.GetValue(item_id) * 2
                 GLOBAL_CACHE.Trading.Merchant.BuyItem(item_id, value)
-                
-            while not ActionQueueManager().IsEmpty("MERCHANT"):
+
+            while not ActionQueueManager().IsEmpty("ACTION"):
                 sleep(0.35)
             
             if log:

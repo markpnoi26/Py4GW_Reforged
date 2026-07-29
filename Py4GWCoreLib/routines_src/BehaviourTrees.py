@@ -63,6 +63,7 @@ from typing import Callable
 
 from .behaviourtrees_src import (
     BTAgents,
+    BTCastEvents,
     BTComposite,
     BTCompositeHelpers,
     BTItems,
@@ -125,6 +126,7 @@ class BT:
     NodeState = BehaviorTree.NodeState
 
     Composite = BTComposite
+    CastEvents = BTCastEvents
     Player = BTPlayer
     Movement = BTMovement
     Skills = BTSkills   
