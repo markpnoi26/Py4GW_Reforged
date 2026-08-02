@@ -19,6 +19,7 @@ Py4GW.ini
 Py4GW.ini.*
 Py4GW_injection_log.txt
 .opencode
+.codex
 .backups
 AGENTS.md
 CLAUDE.md

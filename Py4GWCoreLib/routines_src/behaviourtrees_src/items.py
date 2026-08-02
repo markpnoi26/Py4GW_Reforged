@@ -1886,3 +1886,132 @@ class BTItems:
                 ],
             )
         )
+
+    @staticmethod
+    def IdentifyInventoryItems(
+        rarities: list[str] | None = None,
+        slot_blacklist: list[tuple[int, int]] | None = None,
+        per_item_delay_ms: int = 50,
+        log: bool = False,
+    ) -> BehaviorTree:
+        """
+        Build a tree that identifies every unidentified inventory item matching the rarity filter.
+
+        Meta:
+          Expose: true
+          Audience: beginner
+          Display: Identify Inventory Items
+          Purpose: Identify every unidentified item currently in inventory bags.
+          UserDescription: Use this when you want a BT step that runs a full identify pass with no manual item list.
+          Notes: Auto-collects on first tick from Backpack + Belt Pouch + Bag 1 + Bag 2. Defaults to White/Blue/Purple/Gold when rarities is omitted. per_item_delay_ms throttles the packet rate to avoid anti-abuse disconnects.
+        """
+        active_rarities = set(rarities if rarities is not None else ["Blue", "Purple", "Gold"])
+        state = {"gen": None}
+
+        def collect_unidentified_ids() -> list[int]:
+            from ...Item import Item
+            picked: list[int] = []
+            seen: set[int] = set()
+            for item_id in GLOBAL_CACHE.Inventory.GetAllInventoryItemIds():
+                if item_id in seen or item_id == 0:
+                    continue
+                seen.add(item_id)
+                try:
+                    inst = Item.item_instance(item_id)
+                    if inst is None or not inst.is_inventory_item:
+                        continue
+                    if inst.is_identified:
+                        continue
+                    if inst.rarity.name not in active_rarities:
+                        continue
+                except Exception:
+                    continue
+                picked.append(item_id)
+            return picked
+
+        def tick(node: BehaviorTree.Node) -> BehaviorTree.NodeState:
+            from ..yield_src.items import Items as YieldItems
+            if state["gen"] is None:
+                item_ids = collect_unidentified_ids()
+                if log:
+                    _log("IdentifyInventoryItems", f"Auto-collected {len(item_ids)} unidentified items.", log=True)
+                if not item_ids:
+                    return BehaviorTree.NodeState.SUCCESS
+                state["gen"] = YieldItems.IdentifyItemsAndVerify(item_ids, log=log, per_item_delay_ms=per_item_delay_ms)
+            try:
+                next(state["gen"])
+                return BehaviorTree.NodeState.RUNNING
+            except StopIteration:
+                state["gen"] = None
+                return BehaviorTree.NodeState.SUCCESS
+
+        return BehaviorTree(
+            BehaviorTree.ActionNode(name="IdentifyInventoryItems", action_fn=tick, aftercast_ms=0)
+        )
+
+    @staticmethod
+    def SalvageInventoryItems(
+        rarities: list[str] | None = None,
+        slot_blacklist: list[tuple[int, int]] | None = None,
+        per_item_delay_ms: int = 100,
+        log: bool = False,
+    ) -> BehaviorTree:
+        """
+        Build a tree that salvages every salvageable inventory item matching the rarity filter.
+
+        Meta:
+          Expose: true
+          Audience: beginner
+          Display: Salvage Inventory Items
+          Purpose: Salvage every salvageable item currently in inventory bags.
+          UserDescription: Use this when you want a BT step that runs a full salvage pass with no manual item list.
+          Notes: Auto-collects on first tick and skips items that are not identified (except whites). Handles the Purple/Gold materials confirmation dialog automatically. per_item_delay_ms throttles the packet rate to avoid anti-abuse disconnects.
+        """
+        active_rarities = set(rarities if rarities is not None else ["White", "Blue", "Purple", "Gold"])
+        state = {"gen": None}
+
+        def collect_salvageable_ids() -> list[int]:
+            from ...Item import Item
+            picked: list[int] = []
+            seen: set[int] = set()
+            for item_id in GLOBAL_CACHE.Inventory.GetAllInventoryItemIds():
+                if item_id in seen or item_id == 0:
+                    continue
+                seen.add(item_id)
+                try:
+                    inst = Item.item_instance(item_id)
+                    if inst is None or not inst.is_inventory_item:
+                        continue
+                    if inst.is_salvage_kit or inst.is_id_kit:
+                        continue
+                    if not inst.is_salvageable:
+                        continue
+                    rarity_name = inst.rarity.name
+                    if rarity_name not in active_rarities:
+                        continue
+                    if rarity_name != "White" and not inst.is_identified:
+                        continue
+                except Exception:
+                    continue
+                picked.append(item_id)
+            return picked
+
+        def tick(node: BehaviorTree.Node) -> BehaviorTree.NodeState:
+            from ..yield_src.items import Items as YieldItems
+            if state["gen"] is None:
+                item_ids = collect_salvageable_ids()
+                if log:
+                    _log("SalvageInventoryItems", f"Auto-collected {len(item_ids)} salvageable items.", log=True)
+                if not item_ids:
+                    return BehaviorTree.NodeState.SUCCESS
+                state["gen"] = YieldItems.SalvageItemsAndVerify(item_ids, log=log, per_item_delay_ms=per_item_delay_ms)
+            try:
+                next(state["gen"])
+                return BehaviorTree.NodeState.RUNNING
+            except StopIteration:
+                state["gen"] = None
+                return BehaviorTree.NodeState.SUCCESS
+
+        return BehaviorTree(
+            BehaviorTree.ActionNode(name="SalvageInventoryItems", action_fn=tick, aftercast_ms=0)
+        )

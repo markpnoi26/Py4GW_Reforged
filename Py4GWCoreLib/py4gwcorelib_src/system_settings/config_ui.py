@@ -145,6 +145,18 @@ def build_window(controller) -> "ImGui.SidebarWindow":
                 for _label in ("Vanquish Tracker", "Instance Timer", "Disable Alcohol Effect"):
                     win.add_section(group, _label,
                                     (lambda e=_err: PyImGui.text_colored("Failed to build: %s" % e, ERR_COLOR)))
+            try:
+                from Py4GWCoreLib.py4gwcorelib_src.title_on_map_load import config_ui as title_ui
+
+                title_ui.add_sections(win, group)
+            except Exception as exc:
+                import traceback
+
+                _log("Map & Missions / Title On Map Load section failed to build: %r" % (exc,))
+                _log(traceback.format_exc())
+                _err = str(exc)
+                win.add_section(group, "Title On Map Load",
+                                (lambda e=_err: PyImGui.text_colored("Failed to build: %s" % e, ERR_COLOR)))
         if cat.key == "agents":
             # Custom category rendered by the name_obfuscation feature. Lazy import keeps this module
             # (and the launch_bar toggle path that imports the controller) free of that package until

@@ -14,6 +14,47 @@ from .movement import Movement
 from .player import Player as YieldPlayer
 
 
+def item_still_present(item_id: int) -> bool:
+    from ...Item import Item
+    try:
+        item = Item.item_instance(item_id)
+        if item is None:
+            return False
+        return bool(item.is_inventory_item)
+    except Exception:
+        return False
+
+
+def item_quantity(item_id: int) -> int:
+    from ...Item import Item
+    try:
+        item = Item.item_instance(item_id)
+        if item is None or not item.is_inventory_item:
+            return 0
+        return int(item.quantity)
+    except Exception:
+        return 0
+
+
+def item_is_identified(item_id: int) -> bool:
+    from ...Item import Item
+    try:
+        item = Item.item_instance(item_id)
+        if item is None or not item.is_inventory_item:
+            return True
+        return bool(item.is_identified)
+    except Exception:
+        return True
+
+
+def is_materials_confirm_window_open() -> bool:
+    from ...UIManager import UIManager
+    parent_hash = 140452905
+    yes_button_offsets = [6, 110, 6]
+    frame_id = UIManager.GetChildFrameID(parent_hash, yes_button_offsets)
+    return bool(frame_id) and UIManager.FrameExists(frame_id)
+
+
 class Items:
     @staticmethod
     def _finish_active_pick_up_loot_message() -> bool:
@@ -37,7 +78,6 @@ class Items:
 
     @staticmethod
     def _wait_for_salvage_materials_window(timeout_ms: int = 1200, poll_ms: int = 50, initial_wait_ms: int = 150):
-        from ...UIManager import UIManager
         yield from wait(max(0, initial_wait_ms))
 
         from ...FrameTree import Frame, FrameId
@@ -142,6 +182,138 @@ class Items:
 
         if log and len(item_array) > 0:
             ConsoleLog("IdentifyItems", f"Identified {len(item_array)} items.", Console.MessageType.Info)
+
+    @staticmethod
+    def SalvageItemsAndVerify(
+        item_array: list[int],
+        log: bool = False,
+        per_item_delay_ms: int = 100,
+        per_item_timeout_ms: int = 3000,
+        poll_ms: int = 50,
+    ):
+        """Salvage each item once, then verify completion by polling item
+        state (quantity drop / item removal) plus the materials-confirm
+        window. Advances the moment the game confirms the salvage landed
+        instead of sleeping a fixed delay. Handles Purple/Gold confirm
+        dialogs automatically."""
+        import time
+        from ...Py4GWcorelib import ActionQueueManager, ConsoleLog, Console
+        from ...Inventory import Inventory
+
+        if len(item_array) == 0:
+            ActionQueueManager().ResetQueue("SALVAGE")
+            return
+
+        salvaged_count = 0
+        for item_id in item_array:
+            if not item_still_present(item_id):
+                ConsoleLog("SalvageItemsAndVerify", f"Skip item_id={item_id}: not present.", Console.MessageType.Warning)
+                continue
+
+            _, rarity = GLOBAL_CACHE.Item.Rarity.GetRarity(item_id)
+            needs_confirm = rarity in ("Purple", "Gold")
+            initial_qty = item_quantity(item_id)
+
+            kit_id = GLOBAL_CACHE.Inventory.GetFirstSalvageKit()
+            if kit_id == 0:
+                ConsoleLog("SalvageItemsAndVerify", "Out of salvage kits.", Console.MessageType.Warning)
+                break
+
+            if log:
+                ConsoleLog("SalvageItemsAndVerify", f"Firing salvage item_id={item_id} rarity={rarity} qty={initial_qty} kit={kit_id}.", Console.MessageType.Info)
+            ActionQueueManager().AddAction("SALVAGE", Inventory.SalvageItem, item_id, kit_id)
+            queue_drained = yield from Items._wait_for_empty_queue("SALVAGE", timeout_ms=5000)
+            if not queue_drained:
+                ConsoleLog("SalvageItemsAndVerify", f"Salvage queue never drained (item_id={item_id}).", Console.MessageType.Warning)
+                continue
+
+            fired_at = time.monotonic()
+            confirm_clicked_at = 0.0
+
+            while True:
+                yield from wait(max(1, poll_ms))
+                now = time.monotonic()
+
+                if not item_still_present(item_id):
+                    salvaged_count += 1
+                    break
+                if item_quantity(item_id) < initial_qty:
+                    salvaged_count += 1
+                    break
+
+                if needs_confirm and confirm_clicked_at == 0.0 and is_materials_confirm_window_open():
+                    ActionQueueManager().AddAction("SALVAGE", Inventory.AcceptSalvageMaterialsWindow)
+                    confirm_clicked_at = now
+
+                if (now - fired_at) * 1000 >= per_item_timeout_ms:
+                    ConsoleLog(
+                        "SalvageItemsAndVerify",
+                        f"Timeout item_id={item_id} rarity={rarity} needs_confirm={needs_confirm} "
+                        f"initial_qty={initial_qty} current_qty={item_quantity(item_id)} "
+                        f"confirm_clicked_at={confirm_clicked_at:.3f}.",
+                        Console.MessageType.Warning,
+                    )
+                    break
+
+            yield from wait(max(0, per_item_delay_ms))
+
+        if log and salvaged_count > 0:
+            ConsoleLog("SalvageItemsAndVerify", f"Salvaged {salvaged_count} items.", Console.MessageType.Info)
+
+    @staticmethod
+    def IdentifyItemsAndVerify(
+        item_array: list[int],
+        log: bool = False,
+        per_item_delay_ms: int = 50,
+        per_item_timeout_ms: int = 2000,
+        poll_ms: int = 50,
+    ):
+        """Identify each item once, then verify by polling item.is_identified
+        until true (or timeout). Runs at the speed the game actually resolves
+        each identify rather than a fixed pause."""
+        import time
+        from ...Py4GWcorelib import ActionQueueManager, ConsoleLog, Console
+        from ...Inventory import Inventory
+
+        if len(item_array) == 0:
+            ActionQueueManager().ResetQueue("IDENTIFY")
+            return
+
+        identified_count = 0
+        for item_id in item_array:
+            if item_is_identified(item_id):
+                continue
+
+            kit_id = GLOBAL_CACHE.Inventory.GetFirstIDKit()
+            if kit_id == 0:
+                ConsoleLog("IdentifyItemsAndVerify", "Out of ID kits.", Console.MessageType.Warning)
+                break
+
+            ActionQueueManager().AddAction("IDENTIFY", Inventory.IdentifyItem, item_id, kit_id)
+            queue_drained = yield from Items._wait_for_empty_queue("IDENTIFY", timeout_ms=5000)
+            if not queue_drained:
+                ConsoleLog("IdentifyItemsAndVerify", f"Identify queue never drained (item_id={item_id}).", Console.MessageType.Warning)
+                continue
+
+            fired_at = time.monotonic()
+
+            while True:
+                yield from wait(max(1, poll_ms))
+                if item_is_identified(item_id):
+                    identified_count += 1
+                    break
+                if (time.monotonic() - fired_at) * 1000 >= per_item_timeout_ms:
+                    ConsoleLog(
+                        "IdentifyItemsAndVerify",
+                        f"Timeout item_id={item_id} after {per_item_timeout_ms}ms.",
+                        Console.MessageType.Warning,
+                    )
+                    break
+
+            yield from wait(max(0, per_item_delay_ms))
+
+        if log and identified_count > 0:
+            ConsoleLog("IdentifyItemsAndVerify", f"Identified {identified_count} items.", Console.MessageType.Info)
 
     @staticmethod
     def DepositItems(item_array: list[int], log=False):

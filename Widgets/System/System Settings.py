@@ -26,6 +26,7 @@ for _name in [
     or m.startswith("Py4GWCoreLib.py4gwcorelib_src.agent_recolor")
     or m.startswith("Py4GWCoreLib.py4gwcorelib_src.window_renamer")
     or m.startswith("Py4GWCoreLib.py4gwcorelib_src.map_utilities")
+    or m.startswith("Py4GWCoreLib.py4gwcorelib_src.title_on_map_load")
 ]:
     del sys.modules[_name]
 
@@ -75,6 +76,13 @@ def draw() -> None:
                 _map_utils_get().register()
             except Exception as map_utils_error:
                 PySystem.Console.Log(MODULE_NAME, "Map Utilities boot failed: %s" % map_utils_error,
+                                     PySystem.Console.MessageType.Error)
+            try:
+                from Py4GWCoreLib.py4gwcorelib_src.title_on_map_load import get_controller as _title_get
+
+                _title_get().register()
+            except Exception as title_error:
+                PySystem.Console.Log(MODULE_NAME, "Title On Map Load boot failed: %s" % title_error,
                                      PySystem.Console.MessageType.Error)
             # Also register the persisted name-obfuscation alias set (global/multi-account) at boot.
             try:
